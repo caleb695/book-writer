@@ -43,20 +43,39 @@ function json(body: unknown, status = 200) {
 
 function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number): string {
   const code = `
-import json, os, sys, traceback
-os.makedirs('/kaggle/working', exist_ok=True)
+import json, os, sys, traceback, subprocess
+# /kaggle/working persists across runs when the user enables "Persistence: Files
+# and variables". We cache the GGUF inside it so the second run skips download.
+MODEL_DIR = '/kaggle/working/models'
+os.makedirs(MODEL_DIR, exist_ok=True)
 PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize }))})
+REPO = ${JSON.stringify(repo)}
+FILENAME = ${JSON.stringify(filename)}
+MODEL_PATH = os.path.join(MODEL_DIR, FILENAME)
+
 try:
     from llama_cpp import Llama
 except Exception:
-    import subprocess
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'llama-cpp-python'])
     from llama_cpp import Llama
 
 try:
-    llm = Llama.from_pretrained(
-        repo_id=${JSON.stringify(repo)},
-        filename=${JSON.stringify(filename)},
+    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1_000_000:
+        try:
+            from huggingface_hub import hf_hub_download
+        except Exception:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'huggingface_hub'])
+            from huggingface_hub import hf_hub_download
+        print('LOOMINK_DOWNLOAD', REPO, FILENAME)
+        downloaded = hf_hub_download(repo_id=REPO, filename=FILENAME, local_dir=MODEL_DIR, local_dir_use_symlinks=False)
+        if downloaded != MODEL_PATH:
+            try: os.replace(downloaded, MODEL_PATH)
+            except Exception: MODEL_PATH = downloaded
+    else:
+        print('LOOMINK_CACHE_HIT', MODEL_PATH, os.path.getsize(MODEL_PATH))
+
+    llm = Llama(
+        model_path=MODEL_PATH,
         n_ctx=PROMPT['n_ctx'],
         n_gpu_layers=-1,
         verbose=False,
