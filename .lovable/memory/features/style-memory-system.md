@@ -1,0 +1,24 @@
+---
+name: Memori + UltraContext Style Memory System
+description: Two-layer memory — Memori stores semantic triples long-term, UltraContext assembles minimal context per API call. Five-phase chapter pipeline (draft → enhance → fact-check → correct → quality checklist). Practice mode with judge panel, lag detection. Memory now flows through brainstorming and auto-extracts from committed chapters.
+type: feature
+---
+The memory system has two independent layers working in sequence.
+
+**Memori** (useMemori.tsx) handles long-term persistent memory. Every pattern, rule, checklist item, golden example, failure, voice profile field, and session summary gets stored as a compact semantic triple (subject-predicate-object) in the memory_triples table. Triples are keyed per user and persist across sessions. Confidence gating: ≥0.95 locked permanently, ≥0.75 hard rules, 0.40-0.75 soft suggestions, <0.40 dormant, <0.40 for 50+ sessions auto-deleted. Deduplication uses word overlap ratio (>0.4 = merge). Contradictions are detected via negation pairs and flagged. External Memori API key stored as MEMORI_API_KEY secret.
+
+**UltraContext** (lib/ultraContext.ts) sits on top of Memori. For each API call it filters retrieved triples, strips reconstructable data, compacts redundancy, and assembles only highest-signal tokens into a payload. Token budget ceiling is calculated per model. Fixed layer order: voice profile → locked patterns → hard rules → soft suggestions → thematic fingerprint → failure log → session summaries → character/world (only when prompt mentions entities) → genre conventions → golden examples → style cache. Short generations get minimal slice (locked + failures only). External UltraContext API key stored as ULTRACONTEXT_API_KEY secret.
+
+Database tables: memory_triples (semantic triples), context_snapshots (UltraContext versioning), practice_scores (model rankings), token_usage (per-user tracking). Original tables (style_memory, style_patterns, golden_examples, failure_log, session_history) remain for backward compatibility.
+
+**Five-phase chapter pipeline** (AiTab.tsx + edge functions): (1) Draft — chapter generated silently. (2) Enhancement — same model expands dialogue, emotion, depth, imagery, enforcing word count, never rewriting; streams visibly. (3) Fact-check (fact-check-chapter function) — a separate model pass cross-references every name, relationship, ability, location, timeline, physical detail, and plot fact in the chapter against the full context bundle (outline + prior chapters + manuscript + UltraContext memory). Uses tool calling to return structured `{verdict, issues[], notes}` where each issue has category/quote/problem/correct_fact/severity. (4) Correction (correct-chapter function) — if verdict is "needs_correction", a low-temperature surgical edit pass fixes ONLY the listed errors, propagating name changes throughout, never rewriting prose. Streams the corrected chapter, replacing the enhanced version. (5) Quality checklist — fidelity scoring against style patterns. Each phase falls back gracefully (failed enhancement → show draft; failed fact-check → keep enhanced; failed correction → keep enhanced).
+
+**Memory in brainstorming** (dev-chat edge function + DevTab.tsx): The Development tab brainstorming chat receives the full set of context layers — outline, current manuscript, reference books, style guides, genre, perspective, and the assembled UltraContext memory injection — so the AI gives concrete, on-brand suggestions that respect everything already established. Uses Lovable AI Gateway as primary with auto-fallback.
+
+**Auto-learning from committed chapters** (Index.tsx handleCommitMessage + extract-triples edge function): When a user commits an AI-generated chapter to the manuscript, the chapter is sent to the extract-triples function, which uses Lovable AI tool calling (google/gemini-2.5-flash) to extract 8–25 durable semantic triples covering characters, world rules, plot facts, themes, and a session summary. These flow through useMemori.storeTriples — which deduplicates, reinforces existing matches (+0.05 confidence), detects contradictions, and inserts new triples. The next AI call (chapter generation, enhancement, or brainstorming) sees this fresh memory through UltraContext.
+
+Practice mode (usePracticeMode.tsx): Continuous background training cycling through all models. Dynamic judge panel — models scoring 9+ get promoted, judges scoring ≤7 get demoted. Judges excluded from self-evaluation. Random judge generates prompts. All feedback compressed to semantic triples before storage.
+
+Lag detection (useLagDetection.tsx): Browser Performance API monitoring FPS and JS heap. Auto-pauses practice when metrics drop, resumes on recovery. Pauses during real generation.
+
+All providers: Lovable AI Gateway (primary, always available), Mistral, Groq, OpenRouter (with auto-fallback to Lovable AI on failure).

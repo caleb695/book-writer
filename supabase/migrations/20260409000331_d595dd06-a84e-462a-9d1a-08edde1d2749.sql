@@ -1,0 +1,1 @@
+ALTER TABLE public.user_ai_settings ADD COLUMN chapter_number integer NOT NULL DEFAULT 1;
