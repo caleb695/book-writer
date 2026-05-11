@@ -135,7 +135,8 @@ serve(async (req) => {
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize);
 
     const payload = {
-      slug: `${KAGGLE_USERNAME}/${slug}`,
+      id: 0,
+      slug,
       newTitle: `loomink ${modelId}`.slice(0, 50),
       text: nbSource,
       language: "python",
