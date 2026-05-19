@@ -265,77 +265,85 @@ const AiTab = ({
     );
 
     try {
-      // === KAGGLE BRANCH: submit notebook job + poll, then deliver result as the chapter ===
-      // Each Kaggle run is a cold-start GPU notebook (typically 5–15 minutes), so we
-      // skip the iterative enhance/fact-check loop and deliver the model's output as-is.
+      // === KAGGLE BRANCH: route through generate-chapter using the saved tunnel
+      // endpoint (long-lived llama-cpp server on Kaggle GPU). The runner notebook
+      // must already be running on Kaggle, and the user must have pasted the
+      // tunnel URL + API key into the endpoint panel below the model picker.
       if (aiSettings.model.startsWith("kaggle/")) {
+        const ep = getKaggleEndpoint(aiSettings.model);
+        if (!ep?.tunnel_url) {
+          toast.error("No Kaggle endpoint configured for this model. Open the notebook on Kaggle, run it with GPU, then paste the tunnel URL into the endpoint panel.", { duration: 8000 });
+          throw new Error("Kaggle endpoint not configured");
+        }
         const modelEntry = AI_MODELS.find(m => m.id === aiSettings.model);
         const ctx = modelEntry?.contextWindow ?? 8192;
 
-        // Build a compact prompt — Kaggle T4 context is tight, so keep it focused.
-        const sys = `You are a professional novelist writing Chapter ${targetChapter} of a commercial-fiction novel. Write rich, dramatized prose with extended dialogue, deep interiority, and vivid sensory detail. Output ONLY the chapter starting with "## Chapter ${targetChapter}: [Title]". No commentary.${perspective ? ` Write in ${perspective}.` : ""}${aiSettings.fiction_type_enabled && aiSettings.fiction_type ? ` Genre: ${aiSettings.fiction_type}.` : ""}${wordCountInstruction ? ` ${wordCountInstruction}` : ""}`;
-
-        const userParts: string[] = [];
-        if (committedChapters) userParts.push(`PREVIOUS CHAPTERS (continuity — do not repeat):\n${committedChapters.slice(-8000)}`);
-        if (styleGuides.length > 0) userParts.push(`STYLE GUIDE:\n${styleGuides.join("\n\n").slice(0, 4000)}`);
-        if (ultraContextInjection) userParts.push(`MEMORY:\n${ultraContextInjection.slice(0, 2000)}`);
-        userParts.push(`CHAPTER ${targetChapter} OUTLINE:\n${outline.slice(0, 6000)}`);
-        if (rewrite && notes) userParts.push(`REWRITE NOTES: ${notes}`);
-        if (partialContent) userParts.push(`CONTINUE FROM HERE (do not repeat):\n${partialContent}`);
-        userParts.push(`Now write the complete Chapter ${targetChapter} starting with "## Chapter ${targetChapter}: [Title]".`);
-
         setEnhancePhase("drafting");
-        toast("Submitting job to Kaggle GPU notebook…", { duration: 4000 });
-        const submitResp = await fetch(KAGGLE_SUBMIT_URL, {
+        toast(`Generating via Kaggle tunnel (${new URL(ep.tunnel_url).hostname})…`, { duration: 4000 });
+
+        const resp = await fetch(CHAT_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
           body: JSON.stringify({
+            outline,
+            contextBooks,
+            chapterNumber: targetChapter,
+            rewriteNotes: rewrite ? notes : undefined,
+            previousChapters: committedChapters,
+            fullManuscript: documentContent || undefined,
+            wordCountInstruction,
+            perspective: perspective || undefined,
+            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+            partialContent,
+            styleGuides,
+            ultraContextInjection,
+            stylePatterns: stylePatterns.slice(0, 30),
             model: aiSettings.model,
-            system: sys,
-            user: userParts.join("\n\n"),
             temperature: aiSettings.temperature,
             topP: aiSettings.top_p,
-            maxTokens: 4096,
-            contextWindow: ctx,
+            kaggleEndpoint: {
+              url: ep.tunnel_url,
+              apiKey: ep.api_key,
+              hfRepo: modelEntry?.hfRepo,
+              contextWindow: ctx,
+            },
           }),
           signal: controller.signal,
         });
-        if (!submitResp.ok) {
-          const err = await submitResp.json().catch(() => ({ error: "submit failed" }));
-          throw new Error(err.error || "Kaggle submit failed");
+        if (!resp.ok || !resp.body) {
+          const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+          throw new Error(err.error || "Kaggle generation failed");
         }
-        const submitData = await submitResp.json();
-        const { kernelSlug, userName } = submitData;
 
-        toast(`Kaggle job queued. This typically takes 5–15 minutes (cold start downloads the model).`, { duration: 6000 });
-        setEnhancePhase("polishing");
-
-        // Poll up to ~30 minutes
-        const pollUrl = `${KAGGLE_RESULT_URL}?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`;
-        let attempt = 0;
-        const maxAttempts = 180; // 180 * 10s = 30 min
-        let finalContent = "";
-        while (attempt < maxAttempts) {
-          if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-          await new Promise(r => setTimeout(r, 10_000));
-          attempt++;
-          const pr = await fetch(pollUrl, { headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` }, signal: controller.signal });
-          if (!pr.ok) continue;
-          const pd = await pr.json();
-          if (!pd.done) {
-            if (attempt % 6 === 0) toast(`Still running on Kaggle (${pd.status})… ${attempt * 10}s elapsed`, { duration: 3000 });
-            continue;
+        // Stream SSE response
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let acc = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const raw of lines) {
+            const line = raw.trim();
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const json = JSON.parse(data);
+              const delta = json.choices?.[0]?.delta?.content || "";
+              if (delta) {
+                acc += delta;
+                contentRef.current = acc;
+                setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: acc } : m));
+              }
+            } catch { /* ignore parse errors */ }
           }
-          if (pd.error || !pd.result?.ok) {
-            throw new Error(pd.result?.error || pd.error || "Kaggle job failed");
-          }
-          finalContent = String(pd.result.content || "").trim();
-          break;
         }
-        if (!finalContent) throw new Error("Kaggle job timed out after 30 minutes");
-
-        contentRef.current = finalContent;
-        setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: finalContent } : m));
+        const finalContent = acc.trim();
+        if (!finalContent) throw new Error("Empty response from Kaggle endpoint");
         await onUpdateMessage(assistantMsg.id, finalContent);
         toast.success(`Chapter ready: ${countWords(finalContent).toLocaleString()} words.`, { duration: 4000 });
         setIsGenerating(false);
@@ -344,6 +352,8 @@ const AiTab = ({
         generatingMsgIdRef.current = null;
         return;
       }
+
+
 
       // === PHASE 1: Generate draft (hidden from user) ===
       const draftResp = await fetch(CHAT_URL, {
