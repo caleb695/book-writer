@@ -87,6 +87,8 @@ const AiTab = ({
 
   const chapterNum = parseInt(chapterInput, 10);
   const validChapter = !isNaN(chapterNum) && chapterNum >= 1;
+  const { getFor: getKaggleEndpoint } = useKaggleEndpoints();
+  const isKaggleModel = aiSettings.model.startsWith("kaggle/");
 
   useEffect(() => {
     return () => { abortRef.current?.abort(); };
