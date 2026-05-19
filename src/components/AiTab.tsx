@@ -16,6 +16,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import MemoryBadge from "@/components/MemoryBadge";
+import KaggleEndpointPanel from "@/components/KaggleEndpointPanel";
+import { useKaggleEndpoints } from "@/hooks/useKaggleEndpoints";
 
 interface AiTabProps {
   files: UploadedFile[];
