@@ -912,6 +912,10 @@ const AiTab = ({
         </div>
       </div>
 
+      {isKaggleModel && <KaggleEndpointPanel modelId={aiSettings.model} />}
+
+
+
       {/* Temperature slider */}
       <div className="space-y-3">
         <span className="text-xs text-muted-foreground font-medium">Temperature</span>
