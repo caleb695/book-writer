@@ -41,6 +41,113 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\r\n/g, "\n").trim() : "";
+}
+
+function sampleLongText(text: string, maxChars: number): string {
+  const cleaned = normalizeText(text);
+  if (!cleaned || cleaned.length <= maxChars) return cleaned;
+  const divider = "\n\n[... condensed ...]\n\n";
+  const seg = Math.max(120, Math.floor((maxChars - divider.length * 2) / 3));
+  const mid = Math.max(seg, Math.floor(cleaned.length / 2) - Math.floor(seg / 2));
+  const excerpt = [cleaned.slice(0, seg), cleaned.slice(mid, mid + seg), cleaned.slice(-seg)].join(divider);
+  return excerpt.length > maxChars ? excerpt.slice(0, maxChars) : excerpt;
+}
+
+function takeTail(text: string, maxChars: number): string {
+  const cleaned = normalizeText(text);
+  if (!cleaned || cleaned.length <= maxChars) return cleaned;
+  const prefix = "[Earlier content omitted]\n\n";
+  return `${prefix}${cleaned.slice(-(maxChars - prefix.length))}`;
+}
+
+function compressCollection(values: unknown, totalMax: number, perItem: number): string[] {
+  if (!Array.isArray(values)) return [];
+  const result: string[] = [];
+  let used = 0;
+  for (const value of values) {
+    const cleaned = normalizeText(value);
+    if (!cleaned) continue;
+    const remaining = totalMax - used;
+    if (remaining < 500) break;
+    const excerpt = sampleLongText(cleaned, Math.min(perItem, remaining));
+    if (!excerpt) continue;
+    result.push(excerpt);
+    used += excerpt.length;
+  }
+  return result;
+}
+
+function extractRelevantOutline(outline: string, chapterNumber: number): string {
+  const cleaned = normalizeText(outline);
+  if (!cleaned) return "";
+  const next = chapterNumber + 1;
+  for (const pattern of [
+    new RegExp(`(^|\\n)(chapter\\s*${chapterNumber}\\b[\\s\\S]*?)(?=(\\nchapter\\s*${next}\\b)|$)`, "i"),
+    new RegExp(`(^|\\n)(ch\\.?\\s*${chapterNumber}\\b[\\s\\S]*?)(?=(\\nch\\.?\\s*${next}\\b)|$)`, "i"),
+  ]) {
+    const match = cleaned.match(pattern);
+    if (match?.[2]) return sampleLongText(match[2], 30_000);
+  }
+  return sampleLongText(cleaned, 30_000);
+}
+
+function buildPrompts(body: Record<string, unknown>) {
+  const chapterNumber = Number.isFinite(Number(body.chapterNumber)) ? Number(body.chapterNumber) : 1;
+  const outline = extractRelevantOutline(String(body.outline || ""), chapterNumber);
+  const contextBooks = compressCollection(body.contextBooks, 20_000, 10_000);
+  const previousChapters = takeTail(String(body.previousChapters || ""), 16_000);
+  const fullManuscript = sampleLongText(String(body.fullManuscript || ""), 40_000);
+  const partialContent = takeTail(String(body.partialContent || ""), 8_000);
+  const rewriteNotes = normalizeText(body.rewriteNotes);
+  const wordCountInstruction = normalizeText(body.wordCountInstruction);
+  const perspective = normalizeText(body.perspective);
+  const fictionType = normalizeText(body.fictionType);
+  const styleGuides = compressCollection(body.styleGuides, 18_000, 9_000).join("\n\n---\n\n");
+  const ultraContextInjection = normalizeText(body.ultraContextInjection);
+  const checklist = Array.isArray(body.checklist) ? body.checklist : [];
+  const checklistText = checklist
+    .slice(0, 20)
+    .map((item: any) => `- ${item?.q || ""}`)
+    .filter(Boolean)
+    .join("\n");
+
+  if (!outline) throw new Error("Outline is required");
+
+  let system = `You are a professional novelist writing a complete chapter of fiction. Output only the finished chapter prose.
+
+Rules:
+- The very first line must be exactly: ## Chapter ${chapterNumber}: [Chapter Title]
+- Write only Chapter ${chapterNumber}.
+- Use only details from the Chapter ${chapterNumber} outline.
+- Never summarize scenes that should be dramatized.
+- Preserve continuity with all provided manuscript and reference material.
+- Keep names, places, relationships, and canonical facts exact.`;
+
+  if (perspective) system += `\n- Write every sentence in ${perspective} perspective.`;
+  if (fictionType) system += `\n- Match the conventions, pacing, tone, and dialogue style of ${fictionType}.`;
+  if (wordCountInstruction) system += `\n- ${wordCountInstruction}`;
+  if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
+  if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
+  if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
+
+  let user = "";
+  if (contextBooks.length > 0) user += `REFERENCE MATERIALS:\n\n${contextBooks.join("\n\n---\n\n")}\n\n`;
+  if (fullManuscript) user += `CURRENT MANUSCRIPT:\n\n${fullManuscript}\n\n`;
+  else if (previousChapters) user += `PREVIOUS CHAPTERS:\n\n${previousChapters}\n\n`;
+
+  if (partialContent) {
+    user += `Continue chapter ${chapterNumber} from this existing text without repeating it:\n\n${partialContent}\n\n`;
+  }
+
+  user += `CHAPTER ${chapterNumber} OUTLINE:\n\n${outline}`;
+  if (rewriteNotes) user += `\n\nRewrite instructions: ${rewriteNotes}`;
+  user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity.`;
+
+  return { system, user };
+}
+
 function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number): string {
   const code = `
 import json, os, sys, traceback, subprocess
