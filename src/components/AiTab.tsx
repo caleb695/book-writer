@@ -224,6 +224,77 @@ const AiTab = ({
     }
   }, [setMessages]);
 
+  const streamKaggleNotebookResult = useCallback(async (resp: Response, msgId: string) => {
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error(data?.error || `Generation failed (${resp.status})`);
+    }
+
+    const kernelSlug = data?.kernelSlug;
+    const userName = data?.userName;
+    if (!kernelSlug || !userName) {
+      throw new Error("Kaggle job did not start correctly");
+    }
+
+    const pollDelay = (ms: number) => new Promise((resolve, reject) => {
+      const timer = window.setTimeout(resolve, ms);
+      const onAbort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      abortRef.current?.signal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    let announcedQueue = false;
+    let lastStatus = "";
+
+    while (true) {
+      if (abortRef.current?.signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+      const pollUrl = new URL(KAGGLE_RESULT_URL);
+      pollUrl.searchParams.set("kernelSlug", kernelSlug);
+      pollUrl.searchParams.set("userName", userName);
+
+      const pollResp = await fetch(pollUrl.toString(), {
+        method: "GET",
+        headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
+        signal: abortRef.current?.signal,
+      });
+
+      const pollData = await pollResp.json().catch(() => null);
+      if (!pollResp.ok) {
+        throw new Error(pollData?.error || `Kaggle job failed (${pollResp.status})`);
+      }
+
+      if (!pollData?.done) {
+        const nextStatus = String(pollData?.status || "queued");
+        if (nextStatus !== lastStatus) {
+          lastStatus = nextStatus;
+          if (!announcedQueue) {
+            toast("Starting selected Kaggle model…", { duration: 2500 });
+            announcedQueue = true;
+          }
+        }
+        await pollDelay(nextStatus === "running" ? 3500 : 2500);
+        continue;
+      }
+
+      const result = pollData?.result;
+      if (!result?.ok) {
+        throw new Error(result?.error || pollData?.error || "Kaggle model did not return a chapter");
+      }
+
+      const finalContent = String(result.content || "").trim();
+      if (!finalContent) {
+        throw new Error("Kaggle model returned an empty chapter");
+      }
+
+      contentRef.current = finalContent;
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: finalContent } : m));
+      return finalContent;
+    }
+  }, [setMessages]);
+
   const streamGenerate = useCallback(async (rewrite?: boolean, notes?: string, continueMsg?: AiMessage) => {
     if (!outline) { toast.error("Upload an outline first"); return; }
     if (!validChapter && !continueMsg) { toast.error("Enter a valid chapter number"); return; }
@@ -261,26 +332,16 @@ const AiTab = ({
     );
 
     try {
-      // === KAGGLE BRANCH: route through generate-chapter using the saved tunnel
-      // endpoint (long-lived llama-cpp server on Kaggle GPU). The runner notebook
-      // must already be running on Kaggle, and the user must have pasted the
-      // tunnel URL + API key into the endpoint panel below the model picker.
       if (aiSettings.model.startsWith("kaggle/")) {
-        const ep = getKaggleEndpoint(aiSettings.model);
-        if (!ep?.tunnel_url) {
-          toast.error("No Kaggle endpoint configured. Start the notebook on Kaggle and paste loomink_endpoint.json into the panel below the model picker.", { duration: 8000 });
-          throw new Error("Kaggle endpoint not configured");
-        }
         const modelEntry = AI_MODELS.find(m => m.id === aiSettings.model);
         const ctx = modelEntry?.contextWindow ?? 8192;
 
-        setEnhancePhase("drafting");
-
-
-
-        const resp = await fetch(CHAT_URL, {
+        const submitResp = await fetch(KAGGLE_SUBMIT_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
           body: JSON.stringify({
             outline,
             contextBooks,
@@ -292,61 +353,28 @@ const AiTab = ({
             perspective: perspective || undefined,
             fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
             partialContent,
-            styleGuides,
-            ultraContextInjection,
-            stylePatterns: stylePatterns.slice(0, 30),
+            styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
+            structuredMemory: styleMemory ? {
+              voiceProfile: styleMemory.voice_profile,
+              styleCache: styleMemory.style_cache,
+              detectedGenre: styleMemory.detected_genre,
+              genreConventions: styleMemory.genre_conventions,
+            } : undefined,
+            checklist: stylePatterns
+              .filter(p => p.confidence >= 0.40)
+              .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
+            ultraContextInjection: ultraContextInjection || undefined,
             model: aiSettings.model,
             temperature: aiSettings.temperature,
             topP: aiSettings.top_p,
-            kaggleEndpoint: {
-              url: ep.tunnel_url,
-              apiKey: ep.api_key,
-              hfRepo: modelEntry?.hfRepo,
-              contextWindow: ctx,
-            },
+            contextWindow: ctx,
           }),
           signal: controller.signal,
         });
-        if (!resp.ok || !resp.body) {
-          const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-          throw new Error(err.error || "Kaggle generation failed");
-        }
 
-        // Stream SSE response
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let acc = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const raw of lines) {
-            const line = raw.trim();
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (data === "[DONE]") continue;
-            try {
-              const json = JSON.parse(data);
-              const delta = json.choices?.[0]?.delta?.content || "";
-              if (delta) {
-                acc += delta;
-                contentRef.current = acc;
-                setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: acc } : m));
-              }
-            } catch { /* ignore parse errors */ }
-          }
-        }
-        const finalContent = acc.trim();
-        if (!finalContent) throw new Error("Empty response from Kaggle endpoint");
+        const finalContent = await streamKaggleNotebookResult(submitResp, assistantMsg.id);
         await onUpdateMessage(assistantMsg.id, finalContent);
         toast.success(`Chapter ready: ${countWords(finalContent).toLocaleString()} words.`, { duration: 4000 });
-        setIsGenerating(false);
-        setEnhancePhase("idle");
-        setPhaseIteration(0);
-        generatingMsgIdRef.current = null;
         return;
       }
 
