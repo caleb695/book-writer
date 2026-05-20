@@ -270,14 +270,15 @@ const AiTab = ({
       if (aiSettings.model.startsWith("kaggle/")) {
         const ep = getKaggleEndpoint(aiSettings.model);
         if (!ep?.tunnel_url) {
-          toast.error("No Kaggle endpoint configured for this model. Open the notebook on Kaggle, run it with GPU, then paste the tunnel URL into the endpoint panel.", { duration: 8000 });
+          toast.error("No Kaggle endpoint configured. Start the notebook on Kaggle and paste loomink_endpoint.json into the panel below the model picker.", { duration: 8000 });
           throw new Error("Kaggle endpoint not configured");
         }
         const modelEntry = AI_MODELS.find(m => m.id === aiSettings.model);
         const ctx = modelEntry?.contextWindow ?? 8192;
 
         setEnhancePhase("drafting");
-        toast(`Generating via Kaggle tunnel (${new URL(ep.tunnel_url).hostname})…`, { duration: 4000 });
+
+
 
         const resp = await fetch(CHAT_URL, {
           method: "POST",

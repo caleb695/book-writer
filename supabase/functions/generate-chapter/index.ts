@@ -126,12 +126,12 @@ function approxTokens(text: string): number {
 function fitToBudget(text: string, maxTokens: number): string {
   if (!text) return text;
   const maxChars = Math.max(0, Math.floor(maxTokens * 3.6));
-  if (text.length <= maxChars) return text;
-  // Keep the start (instructions / outline) and the tail (most recent context).
+  if (text.length <= maxChars) return text; // fast path — no allocation
   const head = text.slice(0, Math.floor(maxChars * 0.55));
   const tail = text.slice(-Math.floor(maxChars * 0.4));
   return `${head}\n\n[... condensed to fit model context window ...]\n\n${tail}`;
 }
+
 
 function getProvider(model: string): Provider {
   if (model.startsWith("kaggle/")) return "kaggle";
@@ -522,7 +522,11 @@ Do NOT pad with repetition or filler. Every word must serve the story. But you M
       } catch (err) {
         lastError = `${provider}:${err instanceof Error ? err.message : String(err)}`;
         console.error("generate-chapter exception:", lastError);
+        if (provider === "kaggle") {
+          return jsonResponse({ error: "Kaggle tunnel unreachable. Restart the Kaggle notebook and re-paste loomink_endpoint.json." }, 502);
+        }
       }
+
     }
 
     return jsonResponse({ error: `Generation failed across all providers. Last error: ${lastError}` }, 500);
