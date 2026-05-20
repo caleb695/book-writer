@@ -227,13 +227,12 @@ serve(async (req) => {
     const runtime = MODEL_RUNTIME[modelId];
     if (!runtime) return json({ error: `Unknown Kaggle model: ${modelId}` }, 400);
 
-    const system: string = String(body.system || "");
-    const user: string = String(body.user || "");
+    const { system, user } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
     const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || 4096));
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.7));
-    const topP = Math.max(0, Math.min(1, Number(body.topP) ?? 0.9));
+    const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
 
     // Stable per-model slug. We always overwrite the same notebook (new version)
