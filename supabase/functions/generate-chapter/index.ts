@@ -126,12 +126,12 @@ function approxTokens(text: string): number {
 function fitToBudget(text: string, maxTokens: number): string {
   if (!text) return text;
   const maxChars = Math.max(0, Math.floor(maxTokens * 3.6));
-  if (text.length <= maxChars) return text;
-  // Keep the start (instructions / outline) and the tail (most recent context).
+  if (text.length <= maxChars) return text; // fast path — no allocation
   const head = text.slice(0, Math.floor(maxChars * 0.55));
   const tail = text.slice(-Math.floor(maxChars * 0.4));
   return `${head}\n\n[... condensed to fit model context window ...]\n\n${tail}`;
 }
+
 
 function getProvider(model: string): Provider {
   if (model.startsWith("kaggle/")) return "kaggle";
