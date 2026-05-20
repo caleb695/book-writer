@@ -325,6 +325,10 @@ const AiTab = ({
     generatingMsgIdRef.current = assistantMsg.id;
     const wordCountInstruction = buildWordCountInstruction();
     const partialContent = continueMsg?.content?.trim() || undefined;
+    const hiddenPolishModel = aiSettings.model.startsWith("kaggle/") ? "google/gemini-2.5-flash" : aiSettings.model;
+    const scoringModel = /^(mistral|ministral|magistral|codestral|pixtral)/i.test(hiddenPolishModel)
+      ? hiddenPolishModel
+      : "mistral-large-latest";
 
     // Show "Drafting..." placeholder in the message
     setMessages(prev =>
@@ -485,7 +489,7 @@ const AiTab = ({
           },
           body: JSON.stringify({
             draft: workingText,
-            model: aiSettings.model,
+            model: hiddenPolishModel,
             temperature: aiSettings.temperature,
             top_p: aiSettings.top_p,
             wordCountMin: wordCountMin,
@@ -522,7 +526,7 @@ const AiTab = ({
               body: JSON.stringify({
                 chapter: workingText,
                 context: factCheckContext,
-                model: aiSettings.model,
+                model: hiddenPolishModel,
               }),
               signal: controller.signal,
             });
@@ -552,7 +556,7 @@ const AiTab = ({
                 chapter: workingText,
                 issues,
                 context: factCheckContext,
-                model: aiSettings.model,
+                model: hiddenPolishModel,
                 temperature: 0.3,
                 top_p: aiSettings.top_p,
               }),
@@ -574,7 +578,7 @@ const AiTab = ({
         let checklistFailures = 0;
         if (stylePatterns.length > 0) {
           try {
-            const result = await onScoreFidelity(workingText, aiSettings.model);
+            const result = await onScoreFidelity(workingText, scoringModel);
             if (result) {
               checklistScore = result.fidelityScore;
               checklistFailures = result.failures.filter(f => f.severity === "high" || f.severity === "medium").length;
@@ -642,7 +646,7 @@ const AiTab = ({
       setPhaseIteration(0);
       generatingMsgIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, processStream, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult]);
 
   const handleCommit = async (msg: AiMessage) => {
     const separator = documentContent.length > 0 ? "\n\n\n\n" : "";
