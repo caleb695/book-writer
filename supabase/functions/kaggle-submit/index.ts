@@ -148,17 +148,30 @@ Rules:
   return { system, user };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string): string {
   const code = `
-import json, os, sys, traceback, subprocess
-# /kaggle/working persists across runs when the user enables "Persistence: Files
-# and variables". We cache the GGUF inside it so the second run skips download.
-MODEL_DIR = '/kaggle/working/models'
-os.makedirs(MODEL_DIR, exist_ok=True)
+import json, os, sys, shutil, glob, traceback, subprocess
+# Kaggle wipes /kaggle/working between kernel versions, but a kernel's own
+# previous output is mounted read-only at /kaggle/input/<slug>/ when we add
+# the kernel itself as a kernelDataSource. Check there first, then fall back
+# to a fresh HF download. The downloaded GGUF is written to /kaggle/working
+# so the NEXT version picks it up via /kaggle/input automatically.
+WORK_DIR = '/kaggle/working/models'
+os.makedirs(WORK_DIR, exist_ok=True)
 PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize }))})
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
-MODEL_PATH = os.path.join(MODEL_DIR, FILENAME)
+SLUG = ${JSON.stringify(slug)}
+WORK_PATH = os.path.join(WORK_DIR, FILENAME)
+
+def locate_cached():
+    bases = [f'/kaggle/input/{SLUG}', '/kaggle/input']
+    for base in bases:
+        if not os.path.isdir(base): continue
+        for p in glob.glob(f'{base}/**/{FILENAME}', recursive=True):
+            if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
+                return p
+    return None
 
 try:
     from llama_cpp import Llama
@@ -167,19 +180,23 @@ except Exception:
     from llama_cpp import Llama
 
 try:
-    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1_000_000:
+    cached = locate_cached()
+    if cached:
+        print('LOOMINK_CACHE_HIT', cached, os.path.getsize(cached))
+        MODEL_PATH = cached
+        try:
+            if not os.path.exists(WORK_PATH):
+                shutil.copy(cached, WORK_PATH)
+        except Exception: pass
+    else:
         try:
             from huggingface_hub import hf_hub_download
         except Exception:
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'huggingface_hub'])
             from huggingface_hub import hf_hub_download
         print('LOOMINK_DOWNLOAD', REPO, FILENAME)
-        downloaded = hf_hub_download(repo_id=REPO, filename=FILENAME, local_dir=MODEL_DIR, local_dir_use_symlinks=False)
-        if downloaded != MODEL_PATH:
-            try: os.replace(downloaded, MODEL_PATH)
-            except Exception: MODEL_PATH = downloaded
-    else:
-        print('LOOMINK_CACHE_HIT', MODEL_PATH, os.path.getsize(MODEL_PATH))
+        downloaded = hf_hub_download(repo_id=REPO, filename=FILENAME, local_dir=WORK_DIR, local_dir_use_symlinks=False)
+        MODEL_PATH = downloaded if os.path.exists(downloaded) else WORK_PATH
 
     llm = Llama(
         model_path=MODEL_PATH,
@@ -238,9 +255,9 @@ serve(async (req) => {
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
     const slug = `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 50);
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug);
 
-    const buildPayload = (title: string) => ({
+    const buildPayload = (title: string, includeSelfKernel: boolean) => ({
       id: 0,
       slug,
       newTitle: title,
@@ -252,18 +269,20 @@ serve(async (req) => {
       enableInternet: true,
       datasetDataSources: [],
       competitionDataSources: [],
-      kernelDataSources: [],
+      // Mount the kernel's own previous version as input so the cached GGUF
+      // at /kaggle/working/models is available at /kaggle/input/<slug>/...
+      kernelDataSources: includeSelfKernel ? [`${KAGGLE_USERNAME}/${slug}`] : [],
       modelDataSources: [],
       categoryIds: [],
       machineShape: "NvidiaTeslaT4",
       sessionTimeoutSeconds: 3600,
     });
 
-    const pushOnce = async (title: string) => {
+    const pushOnce = async (title: string, includeSelfKernel: boolean) => {
       const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(title)),
+        body: JSON.stringify(buildPayload(title, includeSelfKernel)),
       });
       const text = await resp.text();
       let parsed: any = {};
@@ -271,10 +290,6 @@ serve(async (req) => {
       return { resp, parsed, text };
     };
 
-    // Kaggle requires titles to be unique across a user's notebooks. When the
-    // exact title is squatted by another kernel (often from a prior different
-    // slug), the API returns 409. Retry with a disambiguated title so the same
-    // slug still gets a new version and the cached model is reused.
     const titles = [
       `loomink ${modelId}`.slice(0, 50),
       `loomink-${slug}`.slice(0, 50),
@@ -282,13 +297,22 @@ serve(async (req) => {
     ];
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    for (const title of titles) {
-      last = await pushOnce(title);
-      const conflict = last.resp.status === 409 ||
-        (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
-        (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
-      if (last.resp.ok && !last.parsed.hasError) break;
-      if (!conflict) break;
+    // Try with self-kernel as datasource (cache mount). If Kaggle rejects it
+    // because the kernel doesn't exist yet (first run) or has no output yet,
+    // retry without it.
+    for (const includeSelf of [true, false]) {
+      for (const title of titles) {
+        last = await pushOnce(title, includeSelf);
+        const conflict = last.resp.status === 409 ||
+          (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
+          (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
+        if (last.resp.ok && !last.parsed.hasError) break;
+        if (!conflict) break;
+      }
+      if (last && last.resp.ok && !last.parsed?.hasError) break;
+      // Detect missing-kernel-source error to retry without self-mount
+      const msg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
+      if (!/kernel|source|not found|does not exist/i.test(msg)) break;
     }
 
     if (!last || !last.resp.ok || last.parsed?.hasError) {
