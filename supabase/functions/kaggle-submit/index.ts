@@ -255,9 +255,9 @@ serve(async (req) => {
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
     const slug = `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 50);
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug);
 
-    const buildPayload = (title: string) => ({
+    const buildPayload = (title: string, includeSelfKernel: boolean) => ({
       id: 0,
       slug,
       newTitle: title,
@@ -269,7 +269,9 @@ serve(async (req) => {
       enableInternet: true,
       datasetDataSources: [],
       competitionDataSources: [],
-      kernelDataSources: [],
+      // Mount the kernel's own previous version as input so the cached GGUF
+      // at /kaggle/working/models is available at /kaggle/input/<slug>/...
+      kernelDataSources: includeSelfKernel ? [`${KAGGLE_USERNAME}/${slug}`] : [],
       modelDataSources: [],
       categoryIds: [],
       machineShape: "NvidiaTeslaT4",
