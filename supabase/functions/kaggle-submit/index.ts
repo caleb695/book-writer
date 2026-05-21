@@ -278,11 +278,11 @@ serve(async (req) => {
       sessionTimeoutSeconds: 3600,
     });
 
-    const pushOnce = async (title: string) => {
+    const pushOnce = async (title: string, includeSelfKernel: boolean) => {
       const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(title)),
+        body: JSON.stringify(buildPayload(title, includeSelfKernel)),
       });
       const text = await resp.text();
       let parsed: any = {};
@@ -290,10 +290,6 @@ serve(async (req) => {
       return { resp, parsed, text };
     };
 
-    // Kaggle requires titles to be unique across a user's notebooks. When the
-    // exact title is squatted by another kernel (often from a prior different
-    // slug), the API returns 409. Retry with a disambiguated title so the same
-    // slug still gets a new version and the cached model is reused.
     const titles = [
       `loomink ${modelId}`.slice(0, 50),
       `loomink-${slug}`.slice(0, 50),
@@ -301,13 +297,22 @@ serve(async (req) => {
     ];
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    for (const title of titles) {
-      last = await pushOnce(title);
-      const conflict = last.resp.status === 409 ||
-        (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
-        (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
-      if (last.resp.ok && !last.parsed.hasError) break;
-      if (!conflict) break;
+    // Try with self-kernel as datasource (cache mount). If Kaggle rejects it
+    // because the kernel doesn't exist yet (first run) or has no output yet,
+    // retry without it.
+    for (const includeSelf of [true, false]) {
+      for (const title of titles) {
+        last = await pushOnce(title, includeSelf);
+        const conflict = last.resp.status === 409 ||
+          (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
+          (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
+        if (last.resp.ok && !last.parsed.hasError) break;
+        if (!conflict) break;
+      }
+      if (last && last.resp.ok && !last.parsed?.hasError) break;
+      // Detect missing-kernel-source error to retry without self-mount
+      const msg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
+      if (!/kernel|source|not found|does not exist/i.test(msg)) break;
     }
 
     if (!last || !last.resp.ok || last.parsed?.hasError) {
