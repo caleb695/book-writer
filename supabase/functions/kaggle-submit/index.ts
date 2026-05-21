@@ -298,9 +298,18 @@ serve(async (req) => {
       }, 502);
     }
 
+    // Kaggle derives the actual notebook slug from the title (the slug field
+    // in the payload is largely ignored). Extract the real slug from the URL
+    // it returns so the client polls the correct kernel.
+    const realSlug = (() => {
+      const u = String(last.parsed?.url || "");
+      const m = u.match(/\/code\/[^/]+\/([^/?#]+)/);
+      return m?.[1] || slug;
+    })();
+
     return json({
       ok: true,
-      kernelSlug: slug,
+      kernelSlug: realSlug,
       userName: KAGGLE_USERNAME,
       versionNumber: last.parsed.versionNumber,
       url: last.parsed.url,
