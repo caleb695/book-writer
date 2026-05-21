@@ -235,15 +235,15 @@ serve(async (req) => {
     const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
 
-    // Stable per-model slug. We always overwrite the same notebook (new version)
-    // so the user accumulates one notebook per model, not one per request.
+    // Stable per-model slug — re-pushing creates a new version of the SAME
+    // kernel, which preserves the cached GGUF in /kaggle/working across runs.
     const slug = `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize);
 
-    const payload = {
+    const buildPayload = (title: string) => ({
       id: 0,
       slug,
-      newTitle: `loomink ${modelId}`.slice(0, 50),
+      newTitle: title,
       text: nbSource,
       language: "python",
       kernelType: "notebook",
@@ -255,29 +255,55 @@ serve(async (req) => {
       kernelDataSources: [],
       modelDataSources: [],
       categoryIds: [],
-      // Kaggle dual-T4 = 2x 16GB. Single-GPU is also fine for these models.
       machineShape: "NvidiaTeslaT4",
       sessionTimeoutSeconds: 3600,
+    });
+
+    const pushOnce = async (title: string) => {
+      const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(title)),
+      });
+      const text = await resp.text();
+      let parsed: any = {};
+      try { parsed = JSON.parse(text); } catch { /* ignore */ }
+      return { resp, parsed, text };
     };
 
-    const pushResp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const pushText = await pushResp.text();
-    let pushJson: any = {};
-    try { pushJson = JSON.parse(pushText); } catch { /* ignore */ }
-    if (!pushResp.ok || pushJson.hasError) {
-      return json({ error: pushJson.error || pushText.slice(0, 500) || "push failed", status: pushResp.status }, 502);
+    // Kaggle requires titles to be unique across a user's notebooks. When the
+    // exact title is squatted by another kernel (often from a prior different
+    // slug), the API returns 409. Retry with a disambiguated title so the same
+    // slug still gets a new version and the cached model is reused.
+    const titles = [
+      `loomink ${modelId}`.slice(0, 50),
+      `loomink-${slug}`.slice(0, 50),
+      `loomink-${slug}-${Date.now().toString(36)}`.slice(0, 50),
+    ];
+
+    let last: { resp: Response; parsed: any; text: string } | null = null;
+    for (const title of titles) {
+      last = await pushOnce(title);
+      const conflict = last.resp.status === 409 ||
+        (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
+        (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
+      if (last.resp.ok && !last.parsed.hasError) break;
+      if (!conflict) break;
+    }
+
+    if (!last || !last.resp.ok || last.parsed?.hasError) {
+      return json({
+        error: last?.parsed?.error || last?.parsed?.message || last?.text?.slice(0, 500) || "push failed",
+        status: last?.resp.status ?? 500,
+      }, 502);
     }
 
     return json({
       ok: true,
       kernelSlug: slug,
       userName: KAGGLE_USERNAME,
-      versionNumber: pushJson.versionNumber,
-      url: pushJson.url,
+      versionNumber: last.parsed.versionNumber,
+      url: last.parsed.url,
     });
   } catch (e) {
     console.error("kaggle-submit error:", e);
