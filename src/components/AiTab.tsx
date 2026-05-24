@@ -190,6 +190,87 @@ const AiTab = ({
     return fullText;
   }, []);
 
+  // Wait helper that respects the abort signal
+  const wait = useCallback((ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const t = window.setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => { window.clearTimeout(t); reject(new DOMException("Aborted", "AbortError")); };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }), []);
+
+  // Request structured surgical edits from patch-chapter and apply them
+  // one-by-one with a short delay so the user literally SEES each span
+  // being edited. Returns the final text after all patches are applied.
+  const applyPatchEdits = useCallback(async (params: {
+    msgId: string;
+    baseText: string;
+    goal: "enhance" | "fix-issues";
+    issues?: any[];
+    wordCountMin: string;
+    wordCountMax: string;
+    checklist: any[];
+    styleRules?: string;
+    ultraContextInjection?: string;
+    perspective?: string;
+    fictionType?: string;
+    contextBundle?: string;
+    signal?: AbortSignal;
+  }): Promise<{ text: string; appliedCount: number }> => {
+    const { msgId, baseText, goal, issues, wordCountMin, wordCountMax, checklist, styleRules, ultraContextInjection, perspective, fictionType, contextBundle, signal } = params;
+
+    const resp = await fetch(PATCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({
+        draft: baseText,
+        goal,
+        issues: issues || [],
+        wordCountMin: parseInt(wordCountMin) || 3500,
+        wordCountMax: parseInt(wordCountMax) || 4000,
+        checklist,
+        styleRules,
+        ultraContextInjection,
+        perspective,
+        fictionType,
+        contextBundle,
+        maxEdits: goal === "fix-issues" ? 40 : 25,
+      }),
+      signal,
+    });
+
+    if (!resp.ok) {
+      console.warn("patch-chapter failed", resp.status);
+      return { text: baseText, appliedCount: 0 };
+    }
+
+    const data = await resp.json().catch(() => null);
+    const edits: Array<{ find: string; replace: string; reason?: string }> = Array.isArray(data?.edits) ? data.edits : [];
+    if (edits.length === 0) return { text: baseText, appliedCount: 0 };
+
+    // Apply each edit on top of the live message, visibly, with a small delay
+    // between edits so the user sees the chapter being actively rewritten.
+    let working = baseText;
+    let applied = 0;
+    const delayMs = edits.length > 20 ? 80 : edits.length > 10 ? 140 : 220;
+
+    for (const edit of edits) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const idx = working.indexOf(edit.find);
+      if (idx === -1) continue;
+      working = working.slice(0, idx) + edit.replace + working.slice(idx + edit.find.length);
+      applied++;
+      contentRef.current = working;
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: working } : m));
+      await wait(delayMs, signal).catch(() => { throw new DOMException("Aborted", "AbortError"); });
+    }
+
+    return { text: working, appliedCount: applied };
+  }, [setMessages, wait]);
+
   const processStream = useCallback(async (resp: Response, msgId: string) => {
     const reader = resp.body!.getReader();
     const decoder = new TextDecoder();
