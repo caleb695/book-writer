@@ -148,9 +148,9 @@ Rules:
   return { system, user };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number): string {
   const code = `
-import json, os, sys, shutil, glob, traceback, subprocess
+import json, os, sys, shutil, glob, traceback, subprocess, re
 # Kaggle wipes /kaggle/working between kernel versions, but a kernel's own
 # previous output is mounted read-only at /kaggle/input/<slug>/ when we add
 # the kernel itself as a kernelDataSource. Check there first, then fall back
@@ -158,7 +158,7 @@ import json, os, sys, shutil, glob, traceback, subprocess
 # so the NEXT version picks it up via /kaggle/input automatically.
 WORK_DIR = '/kaggle/working/models'
 os.makedirs(WORK_DIR, exist_ok=True)
-PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize }))})
+PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
 SLUG = ${JSON.stringify(slug)}
@@ -172,6 +172,9 @@ def locate_cached():
             if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
                 return p
     return None
+
+def wc(s):
+    return len(re.findall(r"\\S+", s or ""))
 
 try:
     from llama_cpp import Llama
@@ -202,21 +205,80 @@ try:
         model_path=MODEL_PATH,
         n_ctx=PROMPT['n_ctx'],
         n_gpu_layers=-1,
+        n_batch=512,
         verbose=False,
     )
-    out = llm.create_chat_completion(
-        messages=[
-            {'role': 'system', 'content': PROMPT['system']},
-            {'role': 'user', 'content': PROMPT['user']},
-        ],
-        max_tokens=PROMPT['max_tokens'],
-        temperature=PROMPT['temperature'],
-        top_p=PROMPT['top_p'],
-    )
-    content = out['choices'][0]['message']['content']
+
+    WORD_MIN = int(PROMPT['word_min'] or 3500)
+    WORD_MAX = int(PROMPT['word_max'] or 4000)
+    T = float(PROMPT['temperature'])
+    P = float(PROMPT['top_p'])
+
+    # Multi-pass generation: the model sees an updated live word count
+    # between each pass and paces itself toward the target. The same Llama
+    # instance is reused so KV cache is shared — only new tokens are
+    # processed each pass, keeping latency low.
+    SEGMENTS = [
+        ('opening',    0.30, "Open the chapter. Establish scene, viewpoint, immediate stakes. Use vivid sensory detail and at least one strong line of dialogue or interiority."),
+        ('rising',     0.60, "Develop the rising action. Deepen conflict, layer character motivation, advance the outline beats. Heavy on dialogue and concrete action."),
+        ('climax',     0.88, "Build to this chapter's peak. Highest tension, most decisive choice or revelation. No summary — fully dramatize."),
+        ('resolution', 1.00, "Land the chapter. Resolve the immediate beat and plant a clear hook into the next chapter. Do not write 'End of chapter' or any meta text."),
+    ]
+
+    convo = [
+        {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWORD COUNT DISCIPLINE:\\n- Total target: {WORD_MIN}-{WORD_MAX} words.\\n- You will receive a live PROGRESS update before each new section telling you exactly how many words you have written and how many remain.\\n- Pace yourself: do not rush the ending, do not pad the middle."},
+        {'role': 'user', 'content': PROMPT['user'] + f"\\n\\nTARGET: {WORD_MIN}-{WORD_MAX} words for this chapter. I will guide you section-by-section with live word-count updates so you can pace the prose precisely."},
+    ]
+
+    full_chapter = ''
+    for idx, (label, frac, guidance) in enumerate(SEGMENTS):
+        target_at_end = int(WORD_MAX * frac)
+        current = wc(full_chapter)
+        needed = max(80, target_at_end - current)
+        budget_tokens = min(int(PROMPT['max_tokens']), int(needed * 1.9) + 200)
+
+        if idx == 0:
+            convo.append({'role': 'user', 'content': f"FIRST SECTION ({label}): {guidance}\\nWrite approximately {needed} words. Begin the chapter now with the required heading on the very first line."})
+        else:
+            convo.append({'role': 'assistant', 'content': last_response})
+            convo.append({'role': 'user', 'content': f"PROGRESS: {current} / {WORD_MAX} words written ({int(current/WORD_MAX*100)}% of target). Remaining budget: {WORD_MAX - current} words.\\n\\nNEXT SECTION ({label}): {guidance}\\nWrite approximately {needed} more words. Continue seamlessly from your last sentence — do NOT restart, do NOT repeat the chapter heading, do NOT summarize what came before."})
+
+        print(f'LOOMINK_PASS {idx+1}/{len(SEGMENTS)} {label} current={current} target={target_at_end} budget={budget_tokens}')
+        out = llm.create_chat_completion(
+            messages=convo,
+            max_tokens=budget_tokens,
+            temperature=T,
+            top_p=P,
+        )
+        last_response = (out['choices'][0]['message']['content'] or '').strip()
+        if not last_response:
+            print(f'LOOMINK_PASS_EMPTY {label}')
+            continue
+        # Strip a duplicated chapter heading the model sometimes re-emits.
+        if idx > 0:
+            last_response = re.sub(r'^\\s*##\\s*Chapter\\s+\\d+[^\\n]*\\n+', '', last_response, count=1, flags=re.IGNORECASE)
+        full_chapter += ('\\n\\n' if full_chapter else '') + last_response
+        # Pop the most recent user instruction so the next pass slots a fresh
+        # progress update in its place — keeps the conversation lean.
+        convo.pop()
+        print(f'LOOMINK_AFTER_PASS {label} total_words={wc(full_chapter)}')
+
+        # Early exit if we already exceeded max — let the model land cleanly.
+        if wc(full_chapter) >= WORD_MAX and label != 'resolution':
+            print('LOOMINK_AT_MAX skipping_remaining_segments')
+            convo.append({'role': 'assistant', 'content': last_response})
+            convo.append({'role': 'user', 'content': f"PROGRESS: {wc(full_chapter)} / {WORD_MAX} words. You have hit the target. Write ONLY a short final paragraph (60-150 words) that lands this chapter and plants a hook. Do not start new scenes."})
+            out = llm.create_chat_completion(messages=convo, max_tokens=400, temperature=T, top_p=P)
+            tail = (out['choices'][0]['message']['content'] or '').strip()
+            if tail:
+                tail = re.sub(r'^\\s*##\\s*Chapter\\s+\\d+[^\\n]*\\n+', '', tail, count=1, flags=re.IGNORECASE)
+                full_chapter += '\\n\\n' + tail
+            break
+
+    final_count = wc(full_chapter)
     with open('/kaggle/working/loomink_output.json', 'w') as f:
-        json.dump({'ok': True, 'content': content, 'usage': out.get('usage', {})}, f)
-    print('LOOMINK_DONE', len(content), 'chars')
+        json.dump({'ok': True, 'content': full_chapter, 'word_count': final_count, 'target': [WORD_MIN, WORD_MAX]}, f)
+    print('LOOMINK_DONE', final_count, 'words')
 except Exception as e:
     with open('/kaggle/working/loomink_output.json', 'w') as f:
         json.dump({'ok': False, 'error': str(e), 'trace': traceback.format_exc()}, f)
