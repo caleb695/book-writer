@@ -49,9 +49,8 @@ const PERSPECTIVES = [
 ];
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-chapter`;
-const ENHANCE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/enhance-chapter`;
+const PATCH_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/patch-chapter`;
 const FACT_CHECK_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-chapter`;
-const CORRECT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/correct-chapter`;
 const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-submit`;
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 
@@ -190,6 +189,87 @@ const AiTab = ({
     }
     return fullText;
   }, []);
+
+  // Wait helper that respects the abort signal
+  const wait = useCallback((ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const t = window.setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => { window.clearTimeout(t); reject(new DOMException("Aborted", "AbortError")); };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }), []);
+
+  // Request structured surgical edits from patch-chapter and apply them
+  // one-by-one with a short delay so the user literally SEES each span
+  // being edited. Returns the final text after all patches are applied.
+  const applyPatchEdits = useCallback(async (params: {
+    msgId: string;
+    baseText: string;
+    goal: "enhance" | "fix-issues";
+    issues?: any[];
+    wordCountMin: string;
+    wordCountMax: string;
+    checklist: any[];
+    styleRules?: string;
+    ultraContextInjection?: string;
+    perspective?: string;
+    fictionType?: string;
+    contextBundle?: string;
+    signal?: AbortSignal;
+  }): Promise<{ text: string; appliedCount: number }> => {
+    const { msgId, baseText, goal, issues, wordCountMin, wordCountMax, checklist, styleRules, ultraContextInjection, perspective, fictionType, contextBundle, signal } = params;
+
+    const resp = await fetch(PATCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({
+        draft: baseText,
+        goal,
+        issues: issues || [],
+        wordCountMin: parseInt(wordCountMin) || 3500,
+        wordCountMax: parseInt(wordCountMax) || 4000,
+        checklist,
+        styleRules,
+        ultraContextInjection,
+        perspective,
+        fictionType,
+        contextBundle,
+        maxEdits: goal === "fix-issues" ? 40 : 25,
+      }),
+      signal,
+    });
+
+    if (!resp.ok) {
+      console.warn("patch-chapter failed", resp.status);
+      return { text: baseText, appliedCount: 0 };
+    }
+
+    const data = await resp.json().catch(() => null);
+    const edits: Array<{ find: string; replace: string; reason?: string }> = Array.isArray(data?.edits) ? data.edits : [];
+    if (edits.length === 0) return { text: baseText, appliedCount: 0 };
+
+    // Apply each edit on top of the live message, visibly, with a small delay
+    // between edits so the user sees the chapter being actively rewritten.
+    let working = baseText;
+    let applied = 0;
+    const delayMs = edits.length > 20 ? 80 : edits.length > 10 ? 140 : 220;
+
+    for (const edit of edits) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const idx = working.indexOf(edit.find);
+      if (idx === -1) continue;
+      working = working.slice(0, idx) + edit.replace + working.slice(idx + edit.find.length);
+      applied++;
+      contentRef.current = working;
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: working } : m));
+      await wait(delayMs, signal).catch(() => { throw new DOMException("Aborted", "AbortError"); });
+    }
+
+    return { text: working, appliedCount: applied };
+  }, [setMessages, wait]);
 
   const processStream = useCallback(async (resp: Response, msgId: string) => {
     const reader = resp.body!.getReader();
@@ -336,6 +416,11 @@ const AiTab = ({
     );
 
     try {
+      // === PHASE 1: Generate the draft chapter ===
+      // For every model (Kaggle or otherwise) we end up with `draftText` and
+      // show it to the user before any patch-editing happens.
+      let draftText = "";
+
       if (aiSettings.model.startsWith("kaggle/")) {
         const modelEntry = AI_MODELS.find(m => m.id === aiSettings.model);
         const ctx = modelEntry?.contextWindow ?? 8192;
@@ -354,6 +439,8 @@ const AiTab = ({
             previousChapters: committedChapters,
             fullManuscript: documentContent || undefined,
             wordCountInstruction,
+            wordCountMin: parseInt(wordCountMin) || 3500,
+            wordCountMax: parseInt(wordCountMax) || 4000,
             perspective: perspective || undefined,
             fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
             partialContent,
@@ -376,61 +463,54 @@ const AiTab = ({
           signal: controller.signal,
         });
 
-        const finalContent = await streamKaggleNotebookResult(submitResp, assistantMsg.id);
-        await onUpdateMessage(assistantMsg.id, finalContent);
-        toast.success(`Chapter ready: ${countWords(finalContent).toLocaleString()} words.`, { duration: 4000 });
-        return;
+        draftText = await streamKaggleNotebookResult(submitResp, assistantMsg.id);
+      } else {
+        const draftResp = await fetch(CHAT_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({
+            outline,
+            contextBooks,
+            chapterNumber: targetChapter,
+            rewriteNotes: rewrite ? notes : undefined,
+            previousChapters: committedChapters,
+            fullManuscript: documentContent || undefined,
+            wordCountInstruction,
+            perspective: perspective || undefined,
+            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+            styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
+            partialContent,
+            model: aiSettings.model,
+            temperature: aiSettings.temperature,
+            top_p: aiSettings.top_p,
+            structuredMemory: styleMemory ? {
+              voiceProfile: styleMemory.voice_profile,
+              styleCache: styleMemory.style_cache,
+              detectedGenre: styleMemory.detected_genre,
+              genreConventions: styleMemory.genre_conventions,
+            } : undefined,
+            checklist: stylePatterns
+              .filter(p => p.confidence >= 0.40)
+              .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
+            ultraContextInjection: ultraContextInjection || undefined,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!draftResp.ok) {
+          const err = await draftResp.json().catch(() => ({ error: "Generation failed" }));
+          toast.error(err.error || "Generation failed");
+          if (!continueMsg) await onDeleteMessage(assistantMsg.id);
+          setIsGenerating(false);
+          setEnhancePhase("idle");
+          return;
+        }
+
+        draftText = await readStreamToString(draftResp, controller.signal);
       }
-
-
-
-      // === PHASE 1: Generate draft (hidden from user) ===
-      const draftResp = await fetch(CHAT_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-        },
-        body: JSON.stringify({
-          outline,
-          contextBooks,
-          chapterNumber: targetChapter,
-          rewriteNotes: rewrite ? notes : undefined,
-          previousChapters: committedChapters,
-          fullManuscript: documentContent || undefined,
-          wordCountInstruction,
-          perspective: perspective || undefined,
-          fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
-          styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
-          partialContent,
-          model: aiSettings.model,
-          temperature: aiSettings.temperature,
-          top_p: aiSettings.top_p,
-          structuredMemory: styleMemory ? {
-            voiceProfile: styleMemory.voice_profile,
-            styleCache: styleMemory.style_cache,
-            detectedGenre: styleMemory.detected_genre,
-            genreConventions: styleMemory.genre_conventions,
-          } : undefined,
-          checklist: stylePatterns
-            .filter(p => p.confidence >= 0.40)
-            .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
-          ultraContextInjection: ultraContextInjection || undefined,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!draftResp.ok) {
-        const err = await draftResp.json().catch(() => ({ error: "Generation failed" }));
-        toast.error(err.error || "Generation failed");
-        if (!continueMsg) await onDeleteMessage(assistantMsg.id);
-        setIsGenerating(false);
-        setEnhancePhase("idle");
-        return;
-      }
-
-      // Read draft silently (not shown to user)
-      const draftText = await readStreamToString(draftResp, controller.signal);
 
       if (!draftText.trim()) {
         if (!continueMsg) await onDeleteMessage(assistantMsg.id);
@@ -440,18 +520,20 @@ const AiTab = ({
         return;
       }
 
-      const draftWordCount = countWords(draftText);
-      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing in background…`, { duration: 4000 });
+      // Show the draft to the user — they'll watch it get surgically edited.
+      contentRef.current = draftText;
+      setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: draftText } : m));
 
-      // Build style rules string (used by enhancer)
+      const draftWordCount = countWords(draftText);
+      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Editing live…`, { duration: 3000 });
+
+      // Build style + fact context for the patch editor
       let styleRulesText = "";
-      if (ultraContextInjection) styleRulesText += ultraContextInjection + "\n";
       const activePatterns = stylePatterns.filter(p => p.confidence >= 0.40);
       if (activePatterns.length > 0) {
-        styleRulesText += activePatterns.map(p => `- ${p.pattern_text}`).join("\n");
+        styleRulesText = activePatterns.map(p => `- ${p.pattern_text}`).join("\n");
       }
 
-      // Build comprehensive context bundle for fact-checker
       const factCheckContext = [
         outline ? `=== OUTLINE ===\n${outline}` : "",
         contextBooks.length > 0 ? `=== REFERENCE / SERIES CONTEXT ===\n${contextBooks.join("\n\n---\n\n")}` : "",
@@ -465,54 +547,43 @@ const AiTab = ({
         .filter(p => p.confidence >= 0.40)
         .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category }));
 
-      // === PHASE 2+: Iterative polishing loop (HIDDEN from user) ===
-      // Loop: enhance → fact-check → correct → re-fact-check → re-enhance if checklist still fails
-      // until clean OR max iterations reached.
+      // === PHASE 2+: Visible surgical-edit loop ===
+      // Each round: patch-enhance (visible) → fact-check → patch-fix (visible)
+      // → checklist score. Loops until clean or max rounds.
       const MAX_POLISH_ROUNDS = 3;
       let workingText = draftText;
-      let extraInstructions = rewrite ? notes : undefined;
       let cleanRun = false;
 
       for (let round = 1; round <= MAX_POLISH_ROUNDS; round++) {
         if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
         setPhaseIteration(round);
 
-        // --- PHASE 2: Enhance (hidden) ---
+        // --- Surgical enhancement edits (visible) ---
         setEnhancePhase("enhancing");
-        toast(`Round ${round}/${MAX_POLISH_ROUNDS}: enhancing prose…`, { duration: 3000 });
-
-        const enhanceResp = await fetch(ENHANCE_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            draft: workingText,
-            model: hiddenPolishModel,
-            temperature: aiSettings.temperature,
-            top_p: aiSettings.top_p,
-            wordCountMin: wordCountMin,
-            wordCountMax: wordCountMax,
-            perspective: perspective || undefined,
-            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+        toast(`Round ${round}: editing for craft…`, { duration: 2500 });
+        try {
+          const { text: enhancedText, appliedCount } = await applyPatchEdits({
+            msgId: assistantMsg.id,
+            baseText: workingText,
+            goal: "enhance",
+            wordCountMin,
+            wordCountMax,
             checklist: checklistPayload,
             styleRules: styleRulesText || undefined,
-            userInstructions: extraInstructions,
-          }),
-          signal: controller.signal,
-        });
-
-        if (enhanceResp.ok) {
-          const enhanced = await readStreamToString(enhanceResp, controller.signal);
-          if (enhanced.trim()) workingText = enhanced;
-        } else {
-          console.warn(`[round ${round}] Enhancement failed, keeping previous text`);
+            ultraContextInjection: ultraContextInjection || undefined,
+            perspective: perspective || undefined,
+            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+            contextBundle: factCheckContext,
+            signal: controller.signal,
+          });
+          workingText = enhancedText;
+          if (appliedCount > 0) toast(`Round ${round}: ${appliedCount} edit${appliedCount > 1 ? "s" : ""} applied.`, { duration: 2000 });
+        } catch (err: any) {
+          if (err?.name === "AbortError") throw err;
+          console.warn(`[round ${round}] enhance patches failed`, err);
         }
-        // Clear any extra instructions after first enhancement pass
-        extraInstructions = undefined;
 
-        // --- PHASE 3: Fact-check (hidden) ---
+        // --- Fact-check ---
         setEnhancePhase("fact-checking");
         let issues: any[] = [];
         if (factCheckContext.trim()) {
@@ -523,11 +594,7 @@ const AiTab = ({
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
               },
-              body: JSON.stringify({
-                chapter: workingText,
-                context: factCheckContext,
-                model: hiddenPolishModel,
-              }),
+              body: JSON.stringify({ chapter: workingText, context: factCheckContext, model: hiddenPolishModel }),
               signal: controller.signal,
             });
             if (fcResp.ok) {
@@ -536,43 +603,39 @@ const AiTab = ({
             }
           } catch (err: any) {
             if (err?.name === "AbortError") throw err;
-            console.warn(`[round ${round}] Fact-check failed:`, err);
+            console.warn(`[round ${round}] fact-check failed`, err);
           }
         }
 
-        // --- PHASE 4: Correct if issues found (hidden) ---
+        // --- Surgical fact-fix edits (visible) ---
         if (issues.length > 0) {
           setEnhancePhase("correcting");
           const critical = issues.filter((i: any) => i.severity === "critical" || i.severity === "high").length;
-          toast(`Round ${round}: fixing ${issues.length} detail issue${issues.length > 1 ? "s" : ""} (${critical} serious)…`, { duration: 3000 });
+          toast(`Round ${round}: fixing ${issues.length} detail${issues.length > 1 ? "s" : ""} (${critical} serious)…`, { duration: 2500 });
           try {
-            const corrResp = await fetch(CORRECT_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-              },
-              body: JSON.stringify({
-                chapter: workingText,
-                issues,
-                context: factCheckContext,
-                model: hiddenPolishModel,
-                temperature: 0.3,
-                top_p: aiSettings.top_p,
-              }),
+            const { text: correctedText } = await applyPatchEdits({
+              msgId: assistantMsg.id,
+              baseText: workingText,
+              goal: "fix-issues",
+              issues,
+              wordCountMin,
+              wordCountMax,
+              checklist: checklistPayload,
+              styleRules: styleRulesText || undefined,
+              ultraContextInjection: ultraContextInjection || undefined,
+              perspective: perspective || undefined,
+              fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+              contextBundle: factCheckContext,
               signal: controller.signal,
             });
-            if (corrResp.ok) {
-              const corrected = await readStreamToString(corrResp, controller.signal);
-              if (corrected.trim()) workingText = corrected;
-            }
+            workingText = correctedText;
           } catch (err: any) {
             if (err?.name === "AbortError") throw err;
-            console.warn(`[round ${round}] Correction failed:`, err);
+            console.warn(`[round ${round}] correction patches failed`, err);
           }
         }
 
-        // --- PHASE 5: Quality checklist (hidden) ---
+        // --- Quality checklist ---
         setEnhancePhase("checking");
         let checklistScore = 1;
         let checklistFailures = 0;
@@ -588,7 +651,6 @@ const AiTab = ({
 
         const factsClean = issues.length === 0;
         const checklistClean = checklistScore >= 0.85 && checklistFailures === 0;
-
         console.log(`[polish round ${round}] facts=${factsClean ? "clean" : `${issues.length} issues`} checklist=${(checklistScore * 100).toFixed(0)}% (${checklistFailures} serious failures)`);
 
         if (factsClean && checklistClean) {
@@ -598,20 +660,17 @@ const AiTab = ({
         }
 
         if (round === MAX_POLISH_ROUNDS) {
-          toast(`Reached max polish rounds (${MAX_POLISH_ROUNDS}). Delivering best version.`, { duration: 4000 });
+          toast(`Reached max polish rounds (${MAX_POLISH_ROUNDS}). Delivering best version.`, { duration: 3500 });
           break;
         }
 
-        // Continue loop — re-enhance + re-check
         setEnhancePhase("polishing");
       }
 
-      // === FINAL REVEAL: Show the polished chapter to the user ===
+      // === FINAL: Persist the polished chapter ===
       setEnhancePhase("finalizing");
       contentRef.current = workingText;
-      setMessages(prev =>
-        prev.map(m => m.id === assistantMsg!.id ? { ...m, content: workingText } : m)
-      );
+      setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: workingText } : m));
       await onUpdateMessage(assistantMsg.id, workingText);
 
       const finalWordCount = countWords(workingText);
@@ -646,7 +705,7 @@ const AiTab = ({
       setPhaseIteration(0);
       generatingMsgIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits]);
 
   const handleCommit = async (msg: AiMessage) => {
     const separator = documentContent.length > 0 ? "\n\n\n\n" : "";
