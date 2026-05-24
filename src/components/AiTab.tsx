@@ -705,7 +705,7 @@ const AiTab = ({
       setPhaseIteration(0);
       generatingMsgIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits]);
 
   const handleCommit = async (msg: AiMessage) => {
     const separator = documentContent.length > 0 ? "\n\n\n\n" : "";
