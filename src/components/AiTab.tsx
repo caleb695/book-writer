@@ -49,9 +49,8 @@ const PERSPECTIVES = [
 ];
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-chapter`;
-const ENHANCE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/enhance-chapter`;
+const PATCH_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/patch-chapter`;
 const FACT_CHECK_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-chapter`;
-const CORRECT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/correct-chapter`;
 const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-submit`;
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 
