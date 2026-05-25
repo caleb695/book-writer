@@ -16,8 +16,18 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import MemoryBadge from "@/components/MemoryBadge";
+import {
+  createJob,
+  updateJob,
+  findResumableJob,
+  reapStaleJobs,
+  type GenerationJob,
+  type JobPhase,
+} from "@/lib/generationJob";
 
 interface AiTabProps {
+  projectId: string | null;
+  userId: string;
   files: UploadedFile[];
   messages: AiMessage[];
   documentContent: string;
