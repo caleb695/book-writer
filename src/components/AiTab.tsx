@@ -251,25 +251,22 @@ const AiTab = ({
     const edits: Array<{ find: string; replace: string; reason?: string }> = Array.isArray(data?.edits) ? data.edits : [];
     if (edits.length === 0) return { text: baseText, appliedCount: 0 };
 
-    // Apply each edit on top of the live message, visibly, with a small delay
-    // between edits so the user sees the chapter being actively rewritten.
+    // Apply all edits silently in a tight loop — nothing is shown to the user
+    // until the entire generate+polish pipeline finishes. This is dramatically
+    // faster than the previous visible per-edit animation.
     let working = baseText;
     let applied = 0;
-    const delayMs = edits.length > 20 ? 80 : edits.length > 10 ? 140 : 220;
-
     for (const edit of edits) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (!edit?.find || typeof edit.replace !== "string") continue;
       const idx = working.indexOf(edit.find);
       if (idx === -1) continue;
       working = working.slice(0, idx) + edit.replace + working.slice(idx + edit.find.length);
       applied++;
-      contentRef.current = working;
-      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: working } : m));
-      await wait(delayMs, signal).catch(() => { throw new DOMException("Aborted", "AbortError"); });
     }
-
+    contentRef.current = working;
     return { text: working, appliedCount: applied };
-  }, [setMessages, wait]);
+  }, []);
 
   const processStream = useCallback(async (resp: Response, msgId: string) => {
     const reader = resp.body!.getReader();
