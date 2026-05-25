@@ -17,6 +17,7 @@ import DocumentTab from "@/components/DocumentTab";
 const Index = () => {
   const { user, loading: authLoading, signOut } = useAuth();
   const {
+    projectId,
     files, messages, documentContent, loading: projectLoading,
     uploadFile, deleteFile, markFileAnalyzed, saveDocument, addMessage,
     updateMessage, commitMessage, deleteMessage, setMessages,
