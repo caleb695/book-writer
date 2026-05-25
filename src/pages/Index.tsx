@@ -153,6 +153,8 @@ const Index = () => {
       </div>
       <div className={activeTab === "ai" ? "flex-1 flex flex-col" : "hidden"}>
         <AiTab
+          projectId={projectId}
+          userId={user.id}
           files={files}
           messages={messages}
           documentContent={documentContent}
