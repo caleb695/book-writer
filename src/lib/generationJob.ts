@@ -55,7 +55,7 @@ export async function createJob(input: {
       model: input.model,
       status: "running",
       phase: "starting",
-      params: input.params,
+      params: input.params as never,
     })
     .select()
     .single();
