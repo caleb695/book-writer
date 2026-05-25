@@ -314,18 +314,11 @@ const AiTab = ({
     }
   }, [setMessages]);
 
-  const streamKaggleNotebookResult = useCallback(async (resp: Response, msgId: string) => {
-    const data = await resp.json().catch(() => null);
-    if (!resp.ok) {
-      throw new Error(data?.error || `Generation failed (${resp.status})`);
-    }
-
-    const kernelSlug = data?.kernelSlug;
-    const userName = data?.userName;
-    if (!kernelSlug || !userName) {
-      throw new Error("Kaggle job did not start correctly");
-    }
-
+  // Poll a Kaggle kernel until it produces a chapter. Accepts either a
+  // freshly-submitted response or a previously-saved {kernelSlug, userName}
+  // so a resumed job can reconnect to a kernel that is still running on
+  // Kaggle's servers without re-submitting it.
+  const pollKaggleKernel = useCallback(async (kernelSlug: string, userName: string) => {
     const pollDelay = (ms: number) => new Promise((resolve, reject) => {
       const timer = window.setTimeout(resolve, ms);
       const onAbort = () => {
@@ -361,7 +354,7 @@ const AiTab = ({
         if (nextStatus !== lastStatus) {
           lastStatus = nextStatus;
           if (!announcedQueue) {
-            toast("Starting selected Kaggle model…", { duration: 2500 });
+            toast("Kaggle model running…", { duration: 2500 });
             announcedQueue = true;
           }
         }
@@ -380,11 +373,30 @@ const AiTab = ({
       }
 
       contentRef.current = finalContent;
-      // Intentionally do NOT update the visible message — the user only sees
-      // the finished chapter once the entire pipeline completes.
       return finalContent;
     }
-  }, [setMessages]);
+  }, []);
+
+  const streamKaggleNotebookResult = useCallback(async (resp: Response, _msgId: string) => {
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error(data?.error || `Generation failed (${resp.status})`);
+    }
+    const kernelSlug = data?.kernelSlug;
+    const userName = data?.userName;
+    if (!kernelSlug || !userName) {
+      throw new Error("Kaggle job did not start correctly");
+    }
+    // Persist the kernel handle immediately so a refresh/sleep can resume.
+    if (jobIdRef.current) {
+      await updateJob(jobIdRef.current, {
+        phase: "kaggle-polling",
+        kernel_slug: kernelSlug,
+        kernel_user: userName,
+      });
+    }
+    return pollKaggleKernel(kernelSlug, userName);
+  }, [pollKaggleKernel]);
 
   const streamGenerate = useCallback(async (rewrite?: boolean, notes?: string, continueMsg?: AiMessage) => {
     if (!outline) { toast.error("Upload an outline first"); return; }
