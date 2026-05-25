@@ -367,7 +367,8 @@ const AiTab = ({
       }
 
       contentRef.current = finalContent;
-      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: finalContent } : m));
+      // Intentionally do NOT update the visible message — the user only sees
+      // the finished chapter once the entire pipeline completes.
       return finalContent;
     }
   }, [setMessages]);
