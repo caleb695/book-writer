@@ -205,7 +205,9 @@ try:
         model_path=MODEL_PATH,
         n_ctx=PROMPT['n_ctx'],
         n_gpu_layers=-1,
-        n_batch=512,
+        n_batch=1024,
+        n_ubatch=512,
+        flash_attn=True,
         verbose=False,
     )
 
