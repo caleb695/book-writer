@@ -17,6 +17,7 @@ import DocumentTab from "@/components/DocumentTab";
 const Index = () => {
   const { user, loading: authLoading, signOut } = useAuth();
   const {
+    projectId,
     files, messages, documentContent, loading: projectLoading,
     uploadFile, deleteFile, markFileAnalyzed, saveDocument, addMessage,
     updateMessage, commitMessage, deleteMessage, setMessages,
@@ -152,6 +153,8 @@ const Index = () => {
       </div>
       <div className={activeTab === "ai" ? "flex-1 flex flex-col" : "hidden"}>
         <AiTab
+          projectId={projectId}
+          userId={user.id}
           files={files}
           messages={messages}
           documentContent={documentContent}

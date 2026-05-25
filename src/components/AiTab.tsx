@@ -16,8 +16,18 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import MemoryBadge from "@/components/MemoryBadge";
+import {
+  createJob,
+  updateJob,
+  findResumableJob,
+  reapStaleJobs,
+  type GenerationJob,
+  type JobPhase,
+} from "@/lib/generationJob";
 
 interface AiTabProps {
+  projectId: string | null;
+  userId: string;
   files: UploadedFile[];
   messages: AiMessage[];
   documentContent: string;
@@ -55,6 +65,7 @@ const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kag
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 
 const AiTab = ({
+  projectId, userId,
   files, messages, documentContent,
   onAddMessage, onUpdateMessage, onCommitMessage,
   onDeleteMessage, onSaveDocument, setMessages, styleGuides,
@@ -79,6 +90,8 @@ const AiTab = ({
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const generatingMsgIdRef = useRef<string | null>(null);
+  const jobIdRef = useRef<string | null>(null);
+  
   const dropdownRef = useRef<HTMLDivElement>(null);
   const fictionDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -301,18 +314,11 @@ const AiTab = ({
     }
   }, [setMessages]);
 
-  const streamKaggleNotebookResult = useCallback(async (resp: Response, msgId: string) => {
-    const data = await resp.json().catch(() => null);
-    if (!resp.ok) {
-      throw new Error(data?.error || `Generation failed (${resp.status})`);
-    }
-
-    const kernelSlug = data?.kernelSlug;
-    const userName = data?.userName;
-    if (!kernelSlug || !userName) {
-      throw new Error("Kaggle job did not start correctly");
-    }
-
+  // Poll a Kaggle kernel until it produces a chapter. Accepts either a
+  // freshly-submitted response or a previously-saved {kernelSlug, userName}
+  // so a resumed job can reconnect to a kernel that is still running on
+  // Kaggle's servers without re-submitting it.
+  const pollKaggleKernel = useCallback(async (kernelSlug: string, userName: string) => {
     const pollDelay = (ms: number) => new Promise((resolve, reject) => {
       const timer = window.setTimeout(resolve, ms);
       const onAbort = () => {
@@ -348,7 +354,7 @@ const AiTab = ({
         if (nextStatus !== lastStatus) {
           lastStatus = nextStatus;
           if (!announcedQueue) {
-            toast("Starting selected Kaggle model…", { duration: 2500 });
+            toast("Kaggle model running…", { duration: 2500 });
             announcedQueue = true;
           }
         }
@@ -367,15 +373,39 @@ const AiTab = ({
       }
 
       contentRef.current = finalContent;
-      // Intentionally do NOT update the visible message — the user only sees
-      // the finished chapter once the entire pipeline completes.
       return finalContent;
     }
-  }, [setMessages]);
+  }, []);
 
-  const streamGenerate = useCallback(async (rewrite?: boolean, notes?: string, continueMsg?: AiMessage) => {
-    if (!outline) { toast.error("Upload an outline first"); return; }
-    if (!validChapter && !continueMsg) { toast.error("Enter a valid chapter number"); return; }
+  const streamKaggleNotebookResult = useCallback(async (resp: Response, _msgId: string) => {
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error(data?.error || `Generation failed (${resp.status})`);
+    }
+    const kernelSlug = data?.kernelSlug;
+    const userName = data?.userName;
+    if (!kernelSlug || !userName) {
+      throw new Error("Kaggle job did not start correctly");
+    }
+    // Persist the kernel handle immediately so a refresh/sleep can resume.
+    if (jobIdRef.current) {
+      await updateJob(jobIdRef.current, {
+        phase: "kaggle-polling",
+        kernel_slug: kernelSlug,
+        kernel_user: userName,
+      });
+    }
+    return pollKaggleKernel(kernelSlug, userName);
+  }, [pollKaggleKernel]);
+
+  const streamGenerate = useCallback(async (
+    rewrite?: boolean,
+    notes?: string,
+    continueMsg?: AiMessage,
+    resumeJob?: GenerationJob,
+  ) => {
+    if (!outline && !resumeJob) { toast.error("Upload an outline first"); return; }
+    if (!validChapter && !continueMsg && !resumeJob) { toast.error("Enter a valid chapter number"); return; }
     if (isGenerating) return;
 
     abortRef.current?.abort();
@@ -385,9 +415,23 @@ const AiTab = ({
     setEnhancePhase("drafting");
     setPhaseIteration(0);
     let assistantMsg: AiMessage | null;
-    const targetChapter = continueMsg?.chapter_number || chapterNum;
+    const targetChapter = resumeJob?.chapter_number || continueMsg?.chapter_number || chapterNum;
 
-    if (continueMsg) {
+    if (resumeJob) {
+      // Re-attach to the assistant message that this job was generating.
+      let existing = messages.find(m => m.id === resumeJob.message_id);
+      if (!existing && resumeJob.message_id) {
+        // Message was lost from local state but should still exist in DB —
+        // create a placeholder so the UI has something to attach to.
+        existing = await onAddMessage("assistant", "", resumeJob.chapter_number);
+      }
+      if (!existing) {
+        existing = await onAddMessage("assistant", "", resumeJob.chapter_number);
+      }
+      if (!existing) { setIsGenerating(false); setEnhancePhase("idle"); return; }
+      assistantMsg = existing;
+      contentRef.current = resumeJob.working_text || resumeJob.draft_text || "";
+    } else if (continueMsg) {
       assistantMsg = continueMsg;
       contentRef.current = continueMsg.content || "";
     } else {
@@ -403,10 +447,38 @@ const AiTab = ({
     generatingMsgIdRef.current = assistantMsg.id;
     const wordCountInstruction = buildWordCountInstruction();
     const partialContent = continueMsg?.content?.trim() || undefined;
-    const hiddenPolishModel = aiSettings.model.startsWith("kaggle/") ? "google/gemini-2.5-flash" : aiSettings.model;
+    const activeModel = resumeJob?.model || aiSettings.model;
+    const hiddenPolishModel = activeModel.startsWith("kaggle/") ? "google/gemini-2.5-flash" : activeModel;
     const scoringModel = /^(mistral|ministral|magistral|codestral|pixtral)/i.test(hiddenPolishModel)
       ? hiddenPolishModel
       : "mistral-large-latest";
+
+    // --- Persist a job row so progress survives tab switches / sleep ---
+    // For a fresh run we insert a new row; for a resume we just reuse the
+    // existing job id so further updates land on the same record.
+    let jobId: string | null = resumeJob?.id ?? null;
+    if (!resumeJob && projectId && userId) {
+      const created = await createJob({
+        user_id: userId,
+        project_id: projectId,
+        message_id: assistantMsg.id,
+        chapter_number: targetChapter,
+        model: activeModel,
+        params: {
+          rewrite: !!rewrite,
+          notes: notes || null,
+          wordCountMin,
+          wordCountMax,
+          perspective: perspective || null,
+          fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : null,
+        },
+      });
+      jobId = created?.id ?? null;
+    } else if (resumeJob && assistantMsg.id !== resumeJob.message_id) {
+      // Update the job's message_id if we had to re-create the assistant message
+      await updateJob(resumeJob.id, { message_id: assistantMsg.id });
+    }
+    jobIdRef.current = jobId;
 
     // Show "Drafting..." placeholder in the message
     setMessages(prev =>
@@ -414,15 +486,27 @@ const AiTab = ({
     );
 
     try {
-      // === PHASE 1: Generate the draft chapter ===
-      // For every model (Kaggle or otherwise) we end up with `draftText` and
-      // show it to the user before any patch-editing happens.
+      // === PHASE 1: Generate (or restore) the draft chapter ===
       let draftText = "";
+      const isKaggle = activeModel.startsWith("kaggle/");
+      const resumedDraft = resumeJob?.draft_text?.trim() || "";
+      const resumedWorking = resumeJob?.working_text?.trim() || "";
 
-      if (aiSettings.model.startsWith("kaggle/")) {
-        const modelEntry = AI_MODELS.find(m => m.id === aiSettings.model);
+      if (resumedWorking || resumedDraft) {
+        // Already past the draft phase — pick up from saved text.
+        draftText = resumedDraft || resumedWorking;
+        toast("Resuming previous chapter generation…", { duration: 2500 });
+      } else if (isKaggle && resumeJob?.kernel_slug && resumeJob?.kernel_user) {
+        // The Kaggle kernel kept running on Kaggle's servers — just reconnect.
+        toast("Reconnecting to running Kaggle kernel…", { duration: 2500 });
+        if (jobId) await updateJob(jobId, { phase: "kaggle-polling" });
+        draftText = await pollKaggleKernel(resumeJob.kernel_slug, resumeJob.kernel_user);
+        if (jobId) await updateJob(jobId, { phase: "drafting", draft_text: draftText, working_text: draftText });
+      } else if (isKaggle) {
+        const modelEntry = AI_MODELS.find(m => m.id === activeModel);
         const ctx = modelEntry?.contextWindow ?? 8192;
 
+        if (jobId) await updateJob(jobId, { phase: "kaggle-submitting" });
         const submitResp = await fetch(KAGGLE_SUBMIT_URL, {
           method: "POST",
           headers: {
@@ -453,7 +537,7 @@ const AiTab = ({
               .filter(p => p.confidence >= 0.40)
               .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
             ultraContextInjection: ultraContextInjection || undefined,
-            model: aiSettings.model,
+            model: activeModel,
             temperature: aiSettings.temperature,
             topP: aiSettings.top_p,
             contextWindow: ctx,
@@ -462,7 +546,9 @@ const AiTab = ({
         });
 
         draftText = await streamKaggleNotebookResult(submitResp, assistantMsg.id);
+        if (jobId) await updateJob(jobId, { phase: "drafting", draft_text: draftText, working_text: draftText });
       } else {
+        if (jobId) await updateJob(jobId, { phase: "drafting" });
         const draftResp = await fetch(CHAT_URL, {
           method: "POST",
           headers: {
@@ -481,7 +567,7 @@ const AiTab = ({
             fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
             styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
             partialContent,
-            model: aiSettings.model,
+            model: activeModel,
             temperature: aiSettings.temperature,
             top_p: aiSettings.top_p,
             structuredMemory: styleMemory ? {
@@ -501,25 +587,26 @@ const AiTab = ({
         if (!draftResp.ok) {
           const err = await draftResp.json().catch(() => ({ error: "Generation failed" }));
           toast.error(err.error || "Generation failed");
-          if (!continueMsg) await onDeleteMessage(assistantMsg.id);
+          if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
+          if (jobId) await updateJob(jobId, { status: "failed", error: err.error || "draft failed" });
           setIsGenerating(false);
           setEnhancePhase("idle");
           return;
         }
 
         draftText = await readStreamToString(draftResp, controller.signal);
+        if (jobId) await updateJob(jobId, { draft_text: draftText, working_text: draftText });
       }
 
       if (!draftText.trim()) {
-        if (!continueMsg) await onDeleteMessage(assistantMsg.id);
+        if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
         toast.error("AI returned an empty response. Try again.");
+        if (jobId) await updateJob(jobId, { status: "failed", error: "empty draft" });
         setIsGenerating(false);
         setEnhancePhase("idle");
         return;
       }
 
-      // Keep the draft hidden — the message stays empty until the polish
-      // pipeline finishes so the user sees only the finished chapter.
       contentRef.current = draftText;
 
       const draftWordCount = countWords(draftText);
@@ -545,19 +632,23 @@ const AiTab = ({
         .filter(p => p.confidence >= 0.40)
         .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category }));
 
-      // === PHASE 2+: Visible surgical-edit loop ===
-      // Each round: patch-enhance (visible) → fact-check → patch-fix (visible)
-      // → checklist score. Loops until clean or max rounds.
+      // === PHASE 2+: Polish loop. Persist working_text + round + phase
+      // before every step so a sleep/refresh can pick up further along.
       const MAX_POLISH_ROUNDS = 3;
-      let workingText = draftText;
+      let workingText = resumedWorking || draftText;
       let cleanRun = false;
+      const startingRound = Math.max(1, Math.min(MAX_POLISH_ROUNDS, (resumeJob?.round || 0) + 1));
+      if (resumedWorking) {
+        toast(`Resuming polish at round ${startingRound}…`, { duration: 2000 });
+      }
 
-      for (let round = 1; round <= MAX_POLISH_ROUNDS; round++) {
+      for (let round = startingRound; round <= MAX_POLISH_ROUNDS; round++) {
         if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
         setPhaseIteration(round);
 
-        // --- Surgical enhancement edits (visible) ---
+        // --- Surgical enhancement edits ---
         setEnhancePhase("enhancing");
+        if (jobId) await updateJob(jobId, { phase: "enhancing", round, working_text: workingText });
         toast(`Round ${round}: editing for craft…`, { duration: 2500 });
         try {
           const { text: enhancedText, appliedCount } = await applyPatchEdits({
@@ -575,6 +666,7 @@ const AiTab = ({
             signal: controller.signal,
           });
           workingText = enhancedText;
+          if (jobId) await updateJob(jobId, { working_text: workingText });
           if (appliedCount > 0) toast(`Round ${round}: ${appliedCount} edit${appliedCount > 1 ? "s" : ""} applied.`, { duration: 2000 });
         } catch (err: any) {
           if (err?.name === "AbortError") throw err;
@@ -583,6 +675,7 @@ const AiTab = ({
 
         // --- Fact-check ---
         setEnhancePhase("fact-checking");
+        if (jobId) await updateJob(jobId, { phase: "fact-checking", working_text: workingText });
         let issues: any[] = [];
         if (factCheckContext.trim()) {
           try {
@@ -605,9 +698,10 @@ const AiTab = ({
           }
         }
 
-        // --- Surgical fact-fix edits (visible) ---
+        // --- Surgical fact-fix edits ---
         if (issues.length > 0) {
           setEnhancePhase("correcting");
+          if (jobId) await updateJob(jobId, { phase: "correcting", working_text: workingText });
           const critical = issues.filter((i: any) => i.severity === "critical" || i.severity === "high").length;
           toast(`Round ${round}: fixing ${issues.length} detail${issues.length > 1 ? "s" : ""} (${critical} serious)…`, { duration: 2500 });
           try {
@@ -627,6 +721,7 @@ const AiTab = ({
               signal: controller.signal,
             });
             workingText = correctedText;
+            if (jobId) await updateJob(jobId, { working_text: workingText });
           } catch (err: any) {
             if (err?.name === "AbortError") throw err;
             console.warn(`[round ${round}] correction patches failed`, err);
@@ -635,6 +730,7 @@ const AiTab = ({
 
         // --- Quality checklist ---
         setEnhancePhase("checking");
+        if (jobId) await updateJob(jobId, { phase: "checking", working_text: workingText });
         let checklistScore = 1;
         let checklistFailures = 0;
         if (stylePatterns.length > 0) {
@@ -663,6 +759,7 @@ const AiTab = ({
         }
 
         setEnhancePhase("polishing");
+        if (jobId) await updateJob(jobId, { phase: "polishing", working_text: workingText });
       }
 
       // === FINAL: Persist the polished chapter ===
@@ -670,6 +767,7 @@ const AiTab = ({
       contentRef.current = workingText;
       setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: workingText } : m));
       await onUpdateMessage(assistantMsg.id, workingText);
+      if (jobId) await updateJob(jobId, { phase: "finalizing", status: "done", working_text: workingText });
 
       const finalWordCount = countWords(workingText);
       toast.success(
@@ -684,26 +782,58 @@ const AiTab = ({
         if (contentRef.current.trim()) {
           await onUpdateMessage(assistantMsg.id, contentRef.current);
           toast("Generation stopped. Partial chapter saved.");
-        } else if (!continueMsg) {
+        } else if (!continueMsg && !resumeJob) {
           await onDeleteMessage(assistantMsg.id);
         }
+        if (jobIdRef.current) await updateJob(jobIdRef.current, { status: "aborted", working_text: contentRef.current });
         setEnhancePhase("idle");
         return;
       }
       if (contentRef.current.trim()) {
         await onUpdateMessage(assistantMsg.id, contentRef.current);
-        toast("Connection lost. Partial chapter saved — use Continue to resume.");
+        toast("Connection lost. Partial chapter saved — it will resume when you return.");
+        // Leave status='running' so on next mount the job is auto-resumed.
+        if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
       } else {
         toast.error(e.message || "Stream failed");
-        if (!continueMsg) await onDeleteMessage(assistantMsg.id);
+        if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
+        if (jobIdRef.current) await updateJob(jobIdRef.current, { status: "failed", error: String(e?.message || e) });
       }
     } finally {
       setIsGenerating(false);
       setEnhancePhase("idle");
       setPhaseIteration(0);
       generatingMsgIdRef.current = null;
+      jobIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits, projectId, userId, messages, pollKaggleKernel]);
+
+  // --- Resume detection ---
+  // On mount (and whenever the active project changes) look for a job that
+  // was left running. If we find one, auto-resume immediately so the user
+  // doesn't have to think about it — exactly the "doesn't reset its
+  // progress" behavior they asked for.
+  useEffect(() => {
+    if (!projectId || !userId) return;
+    let cancelled = false;
+    (async () => {
+      await reapStaleJobs(projectId);
+      const job = await findResumableJob(projectId);
+      if (cancelled || !job) return;
+      if (isGenerating) return;
+      // Auto-resume after a tiny delay so the user sees the toast.
+      toast("Resuming previous chapter generation…", { duration: 2500 });
+      setTimeout(() => {
+        if (!cancelled) {
+          streamGenerate(false, undefined, undefined, job);
+        }
+      }, 400);
+    })();
+    return () => { cancelled = true; };
+    // Only re-run when project or user identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, userId]);
+
 
   const handleCommit = async (msg: AiMessage) => {
     const separator = documentContent.length > 0 ? "\n\n\n\n" : "";
