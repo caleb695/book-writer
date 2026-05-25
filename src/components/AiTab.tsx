@@ -821,7 +821,6 @@ const AiTab = ({
       const job = await findResumableJob(projectId);
       if (cancelled || !job) return;
       if (isGenerating) return;
-      setResumableJob(job);
       // Auto-resume after a tiny delay so the user sees the toast.
       toast("Resuming previous chapter generation…", { duration: 2500 });
       setTimeout(() => {
