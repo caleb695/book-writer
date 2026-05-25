@@ -129,6 +129,66 @@ export type Database = {
           },
         ]
       }
+      generation_jobs: {
+        Row: {
+          chapter_number: number
+          created_at: string
+          draft_text: string
+          error: string | null
+          id: string
+          kernel_slug: string | null
+          kernel_user: string | null
+          message_id: string | null
+          model: string
+          params: Json
+          phase: string
+          project_id: string
+          round: number
+          status: string
+          updated_at: string
+          user_id: string
+          working_text: string
+        }
+        Insert: {
+          chapter_number: number
+          created_at?: string
+          draft_text?: string
+          error?: string | null
+          id?: string
+          kernel_slug?: string | null
+          kernel_user?: string | null
+          message_id?: string | null
+          model?: string
+          params?: Json
+          phase?: string
+          project_id: string
+          round?: number
+          status?: string
+          updated_at?: string
+          user_id: string
+          working_text?: string
+        }
+        Update: {
+          chapter_number?: number
+          created_at?: string
+          draft_text?: string
+          error?: string | null
+          id?: string
+          kernel_slug?: string | null
+          kernel_user?: string | null
+          message_id?: string | null
+          model?: string
+          params?: Json
+          phase?: string
+          project_id?: string
+          round?: number
+          status?: string
+          updated_at?: string
+          user_id?: string
+          working_text?: string
+        }
+        Relationships: []
+      }
       golden_examples: {
         Row: {
           content: string
