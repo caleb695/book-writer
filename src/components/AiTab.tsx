@@ -65,6 +65,7 @@ const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kag
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 
 const AiTab = ({
+  projectId, userId,
   files, messages, documentContent,
   onAddMessage, onUpdateMessage, onCommitMessage,
   onDeleteMessage, onSaveDocument, setMessages, styleGuides,
