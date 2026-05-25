@@ -518,12 +518,12 @@ const AiTab = ({
         return;
       }
 
-      // Show the draft to the user — they'll watch it get surgically edited.
+      // Keep the draft hidden — the message stays empty until the polish
+      // pipeline finishes so the user sees only the finished chapter.
       contentRef.current = draftText;
-      setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: draftText } : m));
 
       const draftWordCount = countWords(draftText);
-      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Editing live…`, { duration: 3000 });
+      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing…`, { duration: 2500 });
 
       // Build style + fact context for the patch editor
       let styleRulesText = "";
