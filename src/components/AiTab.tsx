@@ -91,7 +91,7 @@ const AiTab = ({
   const bottomRef = useRef<HTMLDivElement>(null);
   const generatingMsgIdRef = useRef<string | null>(null);
   const jobIdRef = useRef<string | null>(null);
-  const [resumableJob, setResumableJob] = useState<GenerationJob | null>(null);
+  
   const dropdownRef = useRef<HTMLDivElement>(null);
   const fictionDropdownRef = useRef<HTMLDivElement>(null);
 
