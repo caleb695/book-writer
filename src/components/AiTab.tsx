@@ -379,7 +379,7 @@ const AiTab = ({
           }
           // Persist current status so a fresh tab knows we're still alive.
           if (jobIdRef.current) {
-            updateJob(jobIdRef.current, { phase: `kaggle-${nextStatus}` }).catch(() => {});
+            updateJob(jobIdRef.current, { phase: "kaggle-polling" }).catch(() => {});
           }
         }
         await pollDelay(nextStatus === "running" ? 3500 : 2500);
