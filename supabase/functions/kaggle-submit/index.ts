@@ -382,9 +382,36 @@ serve(async (req) => {
     }
 
     if (!last || !last.resp.ok || last.parsed?.hasError) {
+      // If Kaggle says the kernel is already in use, check whether our stable
+      // per-model slug is in fact still running. If so, reconnect to it so a
+      // tab that came back from sleep doesn't get stuck on "notebook in use".
+      const errMsg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
+      const conflict = last?.resp.status === 409 || /already in use|in use/i.test(errMsg);
+      if (conflict) {
+        try {
+          const statusResp = await fetch(
+            `${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(KAGGLE_USERNAME)}&kernelSlug=${encodeURIComponent(slug)}`,
+            { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
+          );
+          if (statusResp.ok) {
+            const st = await statusResp.json();
+            const state = String(st?.status || "");
+            if (state === "running" || state === "queued") {
+              return json({
+                ok: true,
+                kernelSlug: slug,
+                userName: KAGGLE_USERNAME,
+                reused: true,
+                status: state,
+              });
+            }
+          }
+        } catch { /* fall through to original error */ }
+      }
       return json({
         error: last?.parsed?.error || last?.parsed?.message || last?.text?.slice(0, 500) || "push failed",
         status: last?.resp.status ?? 500,
+        conflict,
       }, 502);
     }
 

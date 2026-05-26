@@ -154,7 +154,7 @@ const AiTab = ({
   };
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    abortRef.current?.abort("user-stop");
     setIsGenerating(false);
   }, []);
 
@@ -778,7 +778,17 @@ const AiTab = ({
       );
 
     } catch (e: any) {
-      if (e.name === "AbortError") {
+      // Heuristics: a Kaggle kernel that's still running server-side, OR an
+      // abort/network error that almost certainly came from the tab being
+      // suspended (mobile background, phone sleep, OS killing the tab) should
+      // NOT mark the job as failed/aborted. Leaving status='running' lets
+      // findResumableJob auto-resume on next mount.
+      const isAbort = e?.name === "AbortError";
+      const isNetwork = e?.name === "TypeError" || /failed to fetch|networkerror|load failed/i.test(String(e?.message || ""));
+      const userStopped = !!abortRef.current?.signal.aborted && (controller.signal.reason === "user-stop");
+      const hasKernel = activeModel.startsWith("kaggle/") && jobIdRef.current && (resumeJob?.kernel_slug || enhancePhase === "drafting" || enhancePhase === "polishing" || enhancePhase === "enhancing" || enhancePhase === "fact-checking" || enhancePhase === "correcting" || enhancePhase === "checking");
+
+      if (userStopped) {
         if (contentRef.current.trim()) {
           await onUpdateMessage(assistantMsg.id, contentRef.current);
           toast("Generation stopped. Partial chapter saved.");
@@ -789,11 +799,24 @@ const AiTab = ({
         setEnhancePhase("idle");
         return;
       }
+
+      // Transient interruption (tab suspended, network blip, Kaggle kernel
+      // still cooking) — keep status='running' so the next mount resumes it.
+      if (isAbort || isNetwork || hasKernel) {
+        if (contentRef.current.trim()) {
+          await onUpdateMessage(assistantMsg.id, contentRef.current);
+        }
+        if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
+        toast("Connection paused — will resume automatically when you return.", { duration: 3500 });
+        setEnhancePhase("idle");
+        return;
+      }
+
+      // Real fatal error from the server
       if (contentRef.current.trim()) {
         await onUpdateMessage(assistantMsg.id, contentRef.current);
-        toast("Connection lost. Partial chapter saved — it will resume when you return.");
-        // Leave status='running' so on next mount the job is auto-resumed.
         if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
+        toast.error(e.message || "Stream failed (partial chapter saved)");
       } else {
         toast.error(e.message || "Stream failed");
         if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
