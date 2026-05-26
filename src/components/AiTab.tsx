@@ -786,7 +786,7 @@ const AiTab = ({
       const isAbort = e?.name === "AbortError";
       const isNetwork = e?.name === "TypeError" || /failed to fetch|networkerror|load failed/i.test(String(e?.message || ""));
       const userStopped = !!abortRef.current?.signal.aborted && (controller.signal.reason === "user-stop");
-      const hasKernel = isKaggle && jobIdRef.current && (resumeJob?.kernel_slug || enhancePhase === "drafting" || enhancePhase === "polishing" || enhancePhase === "enhancing" || enhancePhase === "fact-checking" || enhancePhase === "correcting" || enhancePhase === "checking");
+      const hasKernel = activeModel.startsWith("kaggle/") && jobIdRef.current && (resumeJob?.kernel_slug || enhancePhase === "drafting" || enhancePhase === "polishing" || enhancePhase === "enhancing" || enhancePhase === "fact-checking" || enhancePhase === "correcting" || enhancePhase === "checking");
 
       if (userStopped) {
         if (contentRef.current.trim()) {
