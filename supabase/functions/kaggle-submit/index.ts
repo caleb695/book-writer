@@ -382,31 +382,63 @@ serve(async (req) => {
     }
 
     if (!last || !last.resp.ok || last.parsed?.hasError) {
-      // If Kaggle says the kernel is already in use, check whether our stable
-      // per-model slug is in fact still running. If so, reconnect to it so a
-      // tab that came back from sleep doesn't get stuck on "notebook in use".
+      // If Kaggle says the kernel is already in use, find the actually-running
+      // kernel and reconnect. Kaggle derives the real slug from the title, so
+      // our `slug` variable may not match. We check three sources in order:
+      //   1) a client-supplied hint (knownKernelSlug from the previous submit)
+      //   2) direct status check on our stable slug
+      //   3) list kernels matching the loomink-<modelId> prefix
       const errMsg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
       const conflict = last?.resp.status === 409 || /already in use|in use/i.test(errMsg);
       if (conflict) {
+        const checkSlug = async (candidate: string) => {
+          try {
+            const r = await fetch(
+              `${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(KAGGLE_USERNAME)}&kernelSlug=${encodeURIComponent(candidate)}`,
+              { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
+            );
+            if (!r.ok) return null;
+            const st = await r.json();
+            const state = String(st?.status || "");
+            return (state === "running" || state === "queued") ? state : null;
+          } catch { return null; }
+        };
+
+        const candidates: string[] = [];
+        const hint = typeof body.knownKernelSlug === "string" ? body.knownKernelSlug.trim() : "";
+        if (hint) candidates.push(hint);
+        if (!candidates.includes(slug)) candidates.push(slug);
+
+        // Search Kaggle for kernels with the same prefix.
         try {
-          const statusResp = await fetch(
-            `${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(KAGGLE_USERNAME)}&kernelSlug=${encodeURIComponent(slug)}`,
+          const listResp = await fetch(
+            `${KAGGLE_BASE}/kernels/list?user=${encodeURIComponent(KAGGLE_USERNAME)}&search=${encodeURIComponent(`loomink-${modelId}`)}&pageSize=20&sortBy=dateRun`,
             { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
           );
-          if (statusResp.ok) {
-            const st = await statusResp.json();
-            const state = String(st?.status || "");
-            if (state === "running" || state === "queued") {
-              return json({
-                ok: true,
-                kernelSlug: slug,
-                userName: KAGGLE_USERNAME,
-                reused: true,
-                status: state,
-              });
+          if (listResp.ok) {
+            const arr = await listResp.json();
+            if (Array.isArray(arr)) {
+              for (const k of arr) {
+                const ref = String(k?.ref || ""); // "user/slug"
+                const s = ref.split("/").pop();
+                if (s && !candidates.includes(s)) candidates.push(s);
+              }
             }
           }
-        } catch { /* fall through to original error */ }
+        } catch { /* ignore */ }
+
+        for (const cand of candidates) {
+          const state = await checkSlug(cand);
+          if (state) {
+            return json({
+              ok: true,
+              kernelSlug: cand,
+              userName: KAGGLE_USERNAME,
+              reused: true,
+              status: state,
+            });
+          }
+        }
       }
       return json({
         error: last?.parsed?.error || last?.parsed?.message || last?.text?.slice(0, 500) || "push failed",
