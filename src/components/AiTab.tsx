@@ -154,7 +154,7 @@ const AiTab = ({
   };
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    abortRef.current?.abort("user-stop");
     setIsGenerating(false);
   }, []);
 
