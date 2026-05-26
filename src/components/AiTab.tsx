@@ -330,6 +330,7 @@ const AiTab = ({
 
     let announcedQueue = false;
     let lastStatus = "";
+    let consecutiveNetErrs = 0;
 
     while (true) {
       if (abortRef.current?.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -338,14 +339,33 @@ const AiTab = ({
       pollUrl.searchParams.set("kernelSlug", kernelSlug);
       pollUrl.searchParams.set("userName", userName);
 
-      const pollResp = await fetch(pollUrl.toString(), {
-        method: "GET",
-        headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
-        signal: abortRef.current?.signal,
-      });
+      let pollResp: Response;
+      try {
+        pollResp = await fetch(pollUrl.toString(), {
+          method: "GET",
+          headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
+          signal: abortRef.current?.signal,
+        });
+      } catch (err: any) {
+        // User-initiated abort propagates; transient network failures (tab
+        // suspended, device asleep, wifi drop) retry silently with backoff
+        // so the Kaggle kernel — which keeps running on Kaggle's servers —
+        // can be picked up again once connectivity returns.
+        if (err?.name === "AbortError" && abortRef.current?.signal.aborted) throw err;
+        consecutiveNetErrs++;
+        const backoff = Math.min(30_000, 2000 * Math.pow(1.5, consecutiveNetErrs));
+        try { await pollDelay(backoff); } catch { throw err; }
+        continue;
+      }
+      consecutiveNetErrs = 0;
 
       const pollData = await pollResp.json().catch(() => null);
       if (!pollResp.ok) {
+        // 5xx / gateway hiccups: retry. Only hard-fail on 4xx.
+        if (pollResp.status >= 500) {
+          await pollDelay(4000);
+          continue;
+        }
         throw new Error(pollData?.error || `Kaggle job failed (${pollResp.status})`);
       }
 
@@ -356,6 +376,10 @@ const AiTab = ({
           if (!announcedQueue) {
             toast("Kaggle model running…", { duration: 2500 });
             announcedQueue = true;
+          }
+          // Persist current status so a fresh tab knows we're still alive.
+          if (jobIdRef.current) {
+            updateJob(jobIdRef.current, { phase: `kaggle-${nextStatus}` }).catch(() => {});
           }
         }
         await pollDelay(nextStatus === "running" ? 3500 : 2500);
