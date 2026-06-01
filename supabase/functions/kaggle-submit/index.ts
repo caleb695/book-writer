@@ -62,6 +62,21 @@ function takeTail(text: string, maxChars: number): string {
   return `${prefix}${cleaned.slice(-(maxChars - prefix.length))}`;
 }
 
+function buildStableSlug(modelId: string): string {
+  return `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+}
+
+function buildSlugSearchTerms(modelId: string, slug: string): string[] {
+  const modelPrefix = buildStableSlug(modelId);
+  return Array.from(new Set([
+    modelPrefix,
+    modelPrefix.slice(0, 50),
+    slug,
+    slug.slice(0, 40),
+    modelId.slice(0, 32).replace(/[^a-z0-9-]/gi, "-").toLowerCase(),
+  ].filter(Boolean)));
+}
+
 function compressCollection(values: unknown, totalMax: number, perItem: number): string[] {
   if (!Array.isArray(values)) return [];
   const result: string[] = [];
@@ -320,7 +335,8 @@ serve(async (req) => {
 
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
-    const slug = `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 50);
+    const stableSlug = buildStableSlug(modelId);
+    const slug = stableSlug.slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
     const buildPayload = (title: string, includeSelfKernel: boolean) => ({
@@ -409,13 +425,15 @@ serve(async (req) => {
         if (hint) candidates.push(hint);
         if (!candidates.includes(slug)) candidates.push(slug);
 
-        // Search Kaggle for kernels with the same prefix.
-        try {
-          const listResp = await fetch(
-            `${KAGGLE_BASE}/kernels/list?user=${encodeURIComponent(KAGGLE_USERNAME)}&search=${encodeURIComponent(`loomink-${modelId}`)}&pageSize=20&sortBy=dateRun`,
-            { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
-          );
-          if (listResp.ok) {
+        // Search Kaggle for kernels with the same prefix, including truncated
+        // prefixes for long model ids whose real kernel slug was shortened.
+        for (const term of buildSlugSearchTerms(modelId, slug)) {
+          try {
+            const listResp = await fetch(
+              `${KAGGLE_BASE}/kernels/list?user=${encodeURIComponent(KAGGLE_USERNAME)}&search=${encodeURIComponent(term)}&pageSize=30&sortBy=dateRun`,
+              { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
+            );
+            if (!listResp.ok) continue;
             const arr = await listResp.json();
             if (Array.isArray(arr)) {
               for (const k of arr) {
@@ -424,8 +442,8 @@ serve(async (req) => {
                 if (s && !candidates.includes(s)) candidates.push(s);
               }
             }
-          }
-        } catch { /* ignore */ }
+          } catch { /* ignore */ }
+        }
 
         for (const cand of candidates) {
           const state = await checkSlug(cand);
