@@ -91,6 +91,8 @@ const AiTab = ({
   const bottomRef = useRef<HTMLDivElement>(null);
   const generatingMsgIdRef = useRef<string | null>(null);
   const jobIdRef = useRef<string | null>(null);
+  const resumeInFlightRef = useRef(false);
+  const lastHiddenAtRef = useRef<number>(0);
   
   const dropdownRef = useRef<HTMLDivElement>(null);
   const fictionDropdownRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,16 @@ const AiTab = ({
 
   useEffect(() => {
     return () => { abortRef.current?.abort(); };
+  }, []);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        lastHiddenAtRef.current = Date.now();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, []);
 
   // Sync chapter input from saved settings
@@ -825,13 +837,16 @@ const AiTab = ({
       }
 
       // Transient interruption (tab suspended, network blip, Kaggle kernel
-      // still cooking) — keep status='running' so the next mount resumes it.
+      // still cooking) — keep status='running' so the next return/focus resumes it.
       if (isAbort || isNetwork || hasKernel) {
         if (contentRef.current.trim()) {
           await onUpdateMessage(assistantMsg.id, contentRef.current);
         }
         if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
-        toast("Connection paused — will resume automatically when you return.", { duration: 3500 });
+        const justCameFromBackground = Date.now() - lastHiddenAtRef.current < 8000;
+        if (document.visibilityState === "visible" && !justCameFromBackground) {
+          toast("Connection paused — reconnecting automatically.", { duration: 2500 });
+        }
         setEnhancePhase("idle");
         return;
       }
@@ -855,31 +870,52 @@ const AiTab = ({
     }
   }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits, projectId, userId, messages, pollKaggleKernel]);
 
-  // --- Resume detection ---
-  // On mount (and whenever the active project changes) look for a job that
-  // was left running. If we find one, auto-resume immediately so the user
-  // doesn't have to think about it — exactly the "doesn't reset its
-  // progress" behavior they asked for.
-  useEffect(() => {
-    if (!projectId || !userId) return;
-    let cancelled = false;
-    (async () => {
+  const resumeLatestGeneration = useCallback(async (source: "mount" | "focus" | "online" | "visibility") => {
+    if (!projectId || !userId || isGenerating || resumeInFlightRef.current) return;
+    resumeInFlightRef.current = true;
+    try {
       await reapStaleJobs(projectId);
       const job = await findResumableJob(projectId);
-      if (cancelled || !job) return;
-      if (isGenerating) return;
-      // Auto-resume after a tiny delay so the user sees the toast.
-      toast("Resuming previous chapter generation…", { duration: 2500 });
-      setTimeout(() => {
-        if (!cancelled) {
-          streamGenerate(false, undefined, undefined, job);
-        }
-      }, 400);
-    })();
-    return () => { cancelled = true; };
-    // Only re-run when project or user identity changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, userId]);
+      if (!job || isGenerating) return;
+      if (source !== "mount") {
+        toast("Reconnecting to the running chapter…", { duration: 2200 });
+      } else {
+        toast("Resuming previous chapter generation…", { duration: 2200 });
+      }
+      window.setTimeout(() => {
+        streamGenerate(false, undefined, undefined, job);
+      }, 250);
+    } finally {
+      window.setTimeout(() => {
+        resumeInFlightRef.current = false;
+      }, 1200);
+    }
+  }, [projectId, userId, isGenerating, streamGenerate]);
+
+  // --- Resume detection ---
+  // Auto-resume not only on mount, but also when the user returns to the same
+  // open tab after backgrounding the browser or waking the device.
+  useEffect(() => {
+    if (!projectId || !userId) return;
+    void resumeLatestGeneration("mount");
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void resumeLatestGeneration("visibility");
+      }
+    };
+    const handleFocus = () => void resumeLatestGeneration("focus");
+    const handleOnline = () => void resumeLatestGeneration("online");
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [projectId, userId, resumeLatestGeneration]);
 
 
   const handleCommit = async (msg: AiMessage) => {
