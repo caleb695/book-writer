@@ -339,10 +339,11 @@ serve(async (req) => {
     const slug = stableSlug.slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
-    const buildPayload = (title: string, includeSelfKernel: boolean) => ({
-      id: 0,
+    const kernelId = `${KAGGLE_USERNAME}/${slug}`;
+    const buildPayload = (includeSelfKernel: boolean) => ({
+      id: kernelId,
       slug,
-      newTitle: title,
+      title: slug,
       text: nbSource,
       language: "python",
       kernelType: "notebook",
@@ -360,11 +361,11 @@ serve(async (req) => {
       sessionTimeoutSeconds: 3600,
     });
 
-    const pushOnce = async (title: string, includeSelfKernel: boolean) => {
+    const pushOnce = async (includeSelfKernel: boolean) => {
       const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(title, includeSelfKernel)),
+        body: JSON.stringify(buildPayload(includeSelfKernel)),
       });
       const text = await resp.text();
       let parsed: any = {};
@@ -372,25 +373,12 @@ serve(async (req) => {
       return { resp, parsed, text };
     };
 
-    const titles = [
-      `loomink ${modelId}`.slice(0, 50),
-      `loomink-${slug}`.slice(0, 50),
-      `loomink-${slug}-${Date.now().toString(36)}`.slice(0, 50),
-    ];
-
     let last: { resp: Response; parsed: any; text: string } | null = null;
     // Try with self-kernel as datasource (cache mount). If Kaggle rejects it
     // because the kernel doesn't exist yet (first run) or has no output yet,
     // retry without it.
     for (const includeSelf of [true, false]) {
-      for (const title of titles) {
-        last = await pushOnce(title, includeSelf);
-        const conflict = last.resp.status === 409 ||
-          (typeof last.parsed?.message === "string" && /already in use/i.test(last.parsed.message)) ||
-          (typeof last.parsed?.error === "string" && /already in use/i.test(last.parsed.error));
-        if (last.resp.ok && !last.parsed.hasError) break;
-        if (!conflict) break;
-      }
+      last = await pushOnce(includeSelf);
       if (last && last.resp.ok && !last.parsed?.hasError) break;
       // Detect missing-kernel-source error to retry without self-mount
       const msg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
