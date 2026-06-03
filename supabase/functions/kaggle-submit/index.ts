@@ -62,12 +62,15 @@ function takeTail(text: string, maxChars: number): string {
   return `${prefix}${cleaned.slice(-(maxChars - prefix.length))}`;
 }
 
-function buildStableSlug(modelId: string): string {
-  return `loomink-${modelId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+function buildKernelSlug(modelId: string): string {
+  const overrides: Record<string, string> = {
+    "davidau-llama-3-2-8x3b-moe-dark-champion": "davidau-llama-3-2-8x3b-moe-dark-champion-instruct",
+  };
+  return (overrides[modelId] || modelId).replace(/[^a-z0-9-]/gi, "-").toLowerCase();
 }
 
 function buildSlugSearchTerms(modelId: string, slug: string): string[] {
-  const modelPrefix = buildStableSlug(modelId);
+  const modelPrefix = buildKernelSlug(modelId);
   return Array.from(new Set([
     modelPrefix,
     modelPrefix.slice(0, 50),
@@ -335,18 +338,15 @@ serve(async (req) => {
 
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
-    const stableSlug = buildStableSlug(modelId);
-    const slug = stableSlug.slice(0, 50);
+    const slug = buildKernelSlug(modelId).slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
     const buildPayload = (includeSelfKernel: boolean) => ({
-      // NOTE: Kaggle's `id` field is a numeric kernel ID. Passing a
-      // "user/slug" string makes the API reject the request with
-      // "Could not convert string to integer". Omit it entirely — `slug`
-      // + `newSlug` + `title` route the push to (or create) the right
-      // notebook under the authenticated user.
-      slug,
-      newTitle: slug,
+      // Kaggle's push API expects `slug` in full `username/kernel-slug`
+      // format. Passing only the trailing slug triggers
+      // "Invalid slug: '<slug>'" on some models. Its `id` field, meanwhile,
+      // is numeric in this endpoint, so we must omit it.
+      slug: `${KAGGLE_USERNAME}/${slug}`,
       text: nbSource,
       language: "python",
       kernelType: "notebook",
