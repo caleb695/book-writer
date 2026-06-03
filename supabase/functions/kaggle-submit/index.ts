@@ -339,11 +339,16 @@ serve(async (req) => {
     const slug = stableSlug.slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
-    const kernelId = `${KAGGLE_USERNAME}/${slug}`;
     const buildPayload = (includeSelfKernel: boolean) => ({
-      id: kernelId,
+      // NOTE: Kaggle's `id` field is a numeric kernel ID. Passing a
+      // "user/slug" string makes the API reject the request with
+      // "Could not convert string to integer". Omit it entirely — `slug`
+      // + `newSlug` + `title` route the push to (or create) the right
+      // notebook under the authenticated user.
       slug,
+      newSlug: slug,
       title: slug,
+      newTitle: slug,
       text: nbSource,
       language: "python",
       kernelType: "notebook",
