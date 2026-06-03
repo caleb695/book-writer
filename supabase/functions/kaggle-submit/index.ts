@@ -346,8 +346,6 @@ serve(async (req) => {
       // + `newSlug` + `title` route the push to (or create) the right
       // notebook under the authenticated user.
       slug,
-      newSlug: slug,
-      title: slug,
       newTitle: slug,
       text: nbSource,
       language: "python",
