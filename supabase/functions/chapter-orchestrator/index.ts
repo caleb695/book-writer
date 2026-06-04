@@ -179,7 +179,8 @@ async function runPhase(job: Job): Promise<void> {
   const scoringModel: string = p.scoringModel || "mistral-large-latest";
 
   let working = job.working_text || job.draft_text || "";
-  if (!working.trim()) {
+  const POLISH_PHASES = new Set(["enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing"]);
+  if (POLISH_PHASES.has(job.phase) && !working.trim()) {
     return failJob(job.id, "empty working_text — cannot polish");
   }
 
