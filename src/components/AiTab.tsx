@@ -960,6 +960,41 @@ const AiTab = ({
     };
   }, [projectId, userId, resumeLatestGeneration]);
 
+  // --- Realtime subscription on generation_jobs ---
+  // While the server orchestrator is polishing the chapter in the background,
+  // it persists working_text to the job row after every step. Mirror those
+  // updates into the assistant message so the UI stays in sync whether the
+  // user is on this tab or returns to it after closing the browser.
+  useEffect(() => {
+    if (!projectId || !userId) return;
+    const channel = supabase
+      .channel(`gen-jobs-${projectId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "generation_jobs", filter: `project_id=eq.${projectId}` },
+        (payload) => {
+          const row: any = payload.new;
+          if (!row || row.user_id !== userId) return;
+          const msgId: string | null = row.message_id;
+          const text: string = row.working_text || "";
+          if (msgId && text.trim()) {
+            setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
+          }
+          if (row.status === "done" && msgId) {
+            // Final persist + toast (idempotent — server already wrote ai_messages).
+            const words = (text.trim().split(/\s+/).filter(Boolean) || []).length;
+            toast.success(`Chapter ready: ${words.toLocaleString()} words.`, { duration: 4000 });
+          } else if (row.status === "failed" && row.error) {
+            toast.error(`Polish failed: ${row.error}`);
+          }
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [projectId, userId, setMessages]);
+
+
+
 
   const handleCommit = async (msg: AiMessage) => {
     const separator = documentContent.length > 0 ? "\n\n\n\n" : "";
