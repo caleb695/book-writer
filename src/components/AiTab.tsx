@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import ReactMarkdown from "react-markdown";
 import { RotateCcw, Check, Loader2, StopCircle, Info, Copy, Trash2, PlayCircle, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -63,6 +64,7 @@ const PATCH_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/patch-chapt
 const FACT_CHECK_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-chapter`;
 const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-submit`;
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
+const ORCHESTRATOR_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chapter-orchestrator`;
 
 const AiTab = ({
   projectId, userId,
@@ -646,15 +648,22 @@ const AiTab = ({
       contentRef.current = draftText;
 
       const draftWordCount = countWords(draftText);
-      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing…`, { duration: 2500 });
 
-      // Build style + fact context for the patch editor
+      // === HANDOFF: Polish loop runs server-side from here on. ===
+      //
+      // The server orchestrator (chapter-orchestrator edge function) takes
+      // the draft and runs the full enhance -> fact-check -> correct ->
+      // score -> polish loop on its own, persisting progress to the
+      // generation_jobs row. A pg_cron watchdog re-kicks it if any
+      // invocation dies mid-step, so the chapter finishes even with the
+      // tab closed or the phone asleep. The client just subscribes to
+      // realtime updates on this row (see useEffect below) and mirrors
+      // working_text into the assistant message.
       let styleRulesText = "";
       const activePatterns = stylePatterns.filter(p => p.confidence >= 0.40);
       if (activePatterns.length > 0) {
         styleRulesText = activePatterns.map(p => `- ${p.pattern_text}`).join("\n");
       }
-
       const factCheckContext = [
         outline ? `=== OUTLINE ===\n${outline}` : "",
         contextBooks.length > 0 ? `=== REFERENCE / SERIES CONTEXT ===\n${contextBooks.join("\n\n---\n\n")}` : "",
@@ -663,31 +672,86 @@ const AiTab = ({
           ? `=== FULL CURRENT MANUSCRIPT ===\n${documentContent}` : "",
         ultraContextInjection ? `=== MEMORY / CANONICAL FACTS ===\n${ultraContextInjection}` : "",
       ].filter(Boolean).join("\n\n");
-
       const checklistPayload = stylePatterns
         .filter(p => p.confidence >= 0.40)
         .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category }));
 
-      // === PHASE 2+: Polish loop. Persist working_text + round + phase
-      // before every step so a sleep/refresh can pick up further along.
+      if (jobId) {
+        // Merge polish context into job.params (orchestrator reads from here).
+        const polishParams = {
+          rewrite: !!rewrite,
+          notes: notes || null,
+          wordCountMin,
+          wordCountMax,
+          perspective: perspective || null,
+          fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : null,
+          contextBundle: factCheckContext,
+          styleRules: styleRulesText,
+          ultraContextInjection: ultraContextInjection || "",
+          checklist: checklistPayload,
+          polishModel: hiddenPolishModel,
+          scoringModel,
+        };
+        // Persist working_text + params + flip phase to 'enhancing' so the
+        // server picks up the polish loop on its first invocation.
+        const { error: handoffErr } = await supabase
+          .from("generation_jobs")
+          .update({
+            phase: "enhancing",
+            round: 1,
+            working_text: draftText,
+            draft_text: draftText,
+            params: polishParams as any,
+            error: null,
+          })
+          .eq("id", jobId);
+        if (handoffErr) {
+          console.warn("Handoff failed, falling back to client polish", handoffErr);
+        } else {
+          // Show the draft in the UI immediately while the server polishes.
+          setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: draftText } : m));
+          await onUpdateMessage(assistantMsg.id, draftText);
+          toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing in background…`, { duration: 3500 });
+
+          // Kick the orchestrator. Fire-and-forget — the watchdog will
+          // re-kick if this single request fails.
+          fetch(ORCHESTRATOR_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+            },
+            body: JSON.stringify({ job_id: jobId }),
+            keepalive: true,
+          }).catch(() => { /* watchdog will pick it up */ });
+
+          // We're done from the client's perspective. Realtime sync handles
+          // the rest. Don't run the local polish loop.
+          setIsGenerating(false);
+          setEnhancePhase("idle");
+          setPhaseIteration(0);
+          generatingMsgIdRef.current = null;
+          jobIdRef.current = null;
+          return;
+        }
+      }
+
+      // ----- Fallback client-side polish path (only if handoff failed) -----
+      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing…`, { duration: 2500 });
+
       const MAX_POLISH_ROUNDS = 3;
       let workingText = resumedWorking || draftText;
       let cleanRun = false;
       const startingRound = Math.max(1, Math.min(MAX_POLISH_ROUNDS, (resumeJob?.round || 0) + 1));
-      if (resumedWorking) {
-        toast(`Resuming polish at round ${startingRound}…`, { duration: 2000 });
-      }
 
       for (let round = startingRound; round <= MAX_POLISH_ROUNDS; round++) {
         if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
         setPhaseIteration(round);
 
-        // --- Surgical enhancement edits ---
         setEnhancePhase("enhancing");
         if (jobId) await updateJob(jobId, { phase: "enhancing", round, working_text: workingText });
-        toast(`Round ${round}: editing for craft…`, { duration: 2500 });
         try {
-          const { text: enhancedText, appliedCount } = await applyPatchEdits({
+          const { text: enhancedText } = await applyPatchEdits({
             msgId: assistantMsg.id,
             baseText: workingText,
             goal: "enhance",
@@ -703,13 +767,10 @@ const AiTab = ({
           });
           workingText = enhancedText;
           if (jobId) await updateJob(jobId, { working_text: workingText });
-          if (appliedCount > 0) toast(`Round ${round}: ${appliedCount} edit${appliedCount > 1 ? "s" : ""} applied.`, { duration: 2000 });
         } catch (err: any) {
           if (err?.name === "AbortError") throw err;
-          console.warn(`[round ${round}] enhance patches failed`, err);
         }
 
-        // --- Fact-check ---
         setEnhancePhase("fact-checking");
         if (jobId) await updateJob(jobId, { phase: "fact-checking", working_text: workingText });
         let issues: any[] = [];
@@ -730,16 +791,12 @@ const AiTab = ({
             }
           } catch (err: any) {
             if (err?.name === "AbortError") throw err;
-            console.warn(`[round ${round}] fact-check failed`, err);
           }
         }
 
-        // --- Surgical fact-fix edits ---
         if (issues.length > 0) {
           setEnhancePhase("correcting");
           if (jobId) await updateJob(jobId, { phase: "correcting", working_text: workingText });
-          const critical = issues.filter((i: any) => i.severity === "critical" || i.severity === "high").length;
-          toast(`Round ${round}: fixing ${issues.length} detail${issues.length > 1 ? "s" : ""} (${critical} serious)…`, { duration: 2500 });
           try {
             const { text: correctedText } = await applyPatchEdits({
               msgId: assistantMsg.id,
@@ -760,11 +817,9 @@ const AiTab = ({
             if (jobId) await updateJob(jobId, { working_text: workingText });
           } catch (err: any) {
             if (err?.name === "AbortError") throw err;
-            console.warn(`[round ${round}] correction patches failed`, err);
           }
         }
 
-        // --- Quality checklist ---
         setEnhancePhase("checking");
         if (jobId) await updateJob(jobId, { phase: "checking", working_text: workingText });
         let checklistScore = 1;
@@ -776,29 +831,16 @@ const AiTab = ({
               checklistScore = result.fidelityScore;
               checklistFailures = result.failures.filter(f => f.severity === "high" || f.severity === "medium").length;
             }
-          } catch { /* scoring failed silently */ }
+          } catch { /* silent */ }
         }
-
         const factsClean = issues.length === 0;
         const checklistClean = checklistScore >= 0.85 && checklistFailures === 0;
-        console.log(`[polish round ${round}] facts=${factsClean ? "clean" : `${issues.length} issues`} checklist=${(checklistScore * 100).toFixed(0)}% (${checklistFailures} serious failures)`);
-
-        if (factsClean && checklistClean) {
-          cleanRun = true;
-          toast.success(`Chapter passed all checks on round ${round}.`, { duration: 3000 });
-          break;
-        }
-
-        if (round === MAX_POLISH_ROUNDS) {
-          toast(`Reached max polish rounds (${MAX_POLISH_ROUNDS}). Delivering best version.`, { duration: 3500 });
-          break;
-        }
-
+        if (factsClean && checklistClean) { cleanRun = true; break; }
+        if (round === MAX_POLISH_ROUNDS) break;
         setEnhancePhase("polishing");
         if (jobId) await updateJob(jobId, { phase: "polishing", working_text: workingText });
       }
 
-      // === FINAL: Persist the polished chapter ===
       setEnhancePhase("finalizing");
       contentRef.current = workingText;
       setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: workingText } : m));
@@ -812,6 +854,7 @@ const AiTab = ({
           : `Chapter ready: ${finalWordCount.toLocaleString()} words.`,
         { duration: 4000 }
       );
+
 
     } catch (e: any) {
       // Heuristics: a Kaggle kernel that's still running server-side, OR an
@@ -916,6 +959,41 @@ const AiTab = ({
       window.removeEventListener("online", handleOnline);
     };
   }, [projectId, userId, resumeLatestGeneration]);
+
+  // --- Realtime subscription on generation_jobs ---
+  // While the server orchestrator is polishing the chapter in the background,
+  // it persists working_text to the job row after every step. Mirror those
+  // updates into the assistant message so the UI stays in sync whether the
+  // user is on this tab or returns to it after closing the browser.
+  useEffect(() => {
+    if (!projectId || !userId) return;
+    const channel = supabase
+      .channel(`gen-jobs-${projectId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "generation_jobs", filter: `project_id=eq.${projectId}` },
+        (payload) => {
+          const row: any = payload.new;
+          if (!row || row.user_id !== userId) return;
+          const msgId: string | null = row.message_id;
+          const text: string = row.working_text || "";
+          if (msgId && text.trim()) {
+            setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
+          }
+          if (row.status === "done" && msgId) {
+            // Final persist + toast (idempotent — server already wrote ai_messages).
+            const words = (text.trim().split(/\s+/).filter(Boolean) || []).length;
+            toast.success(`Chapter ready: ${words.toLocaleString()} words.`, { duration: 4000 });
+          } else if (row.status === "failed" && row.error) {
+            toast.error(`Polish failed: ${row.error}`);
+          }
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [projectId, userId, setMessages]);
+
+
 
 
   const handleCommit = async (msg: AiMessage) => {

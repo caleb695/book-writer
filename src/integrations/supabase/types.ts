@@ -132,6 +132,7 @@ export type Database = {
       generation_jobs: {
         Row: {
           chapter_number: number
+          claimed_at: string | null
           created_at: string
           draft_text: string
           error: string | null
@@ -151,6 +152,7 @@ export type Database = {
         }
         Insert: {
           chapter_number: number
+          claimed_at?: string | null
           created_at?: string
           draft_text?: string
           error?: string | null
@@ -170,6 +172,7 @@ export type Database = {
         }
         Update: {
           chapter_number?: number
+          claimed_at?: string | null
           created_at?: string
           draft_text?: string
           error?: string | null
