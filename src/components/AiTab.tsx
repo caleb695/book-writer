@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import ReactMarkdown from "react-markdown";
 import { RotateCcw, Check, Loader2, StopCircle, Info, Copy, Trash2, PlayCircle, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
