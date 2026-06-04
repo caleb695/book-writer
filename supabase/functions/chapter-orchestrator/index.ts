@@ -93,10 +93,10 @@ function callOther(url: string, body: unknown): Promise<Response> {
   });
 }
 
-function fireAndForgetSelf(job_id: string): void {
+function fireAndForgetSelf(job_id: string, delayMs = 0): void {
   // Re-invoke this same function so the next phase runs without the caller
   // having to wait. waitUntil keeps the runtime alive long enough to flush.
-  const p = fetch(SELF_URL, {
+  const invoke = () => fetch(SELF_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -105,6 +105,9 @@ function fireAndForgetSelf(job_id: string): void {
     },
     body: JSON.stringify({ job_id }),
   }).catch((e) => console.warn("self-invoke failed", e));
+  const p = delayMs > 0
+    ? new Promise<void>((resolve) => setTimeout(() => { invoke().finally(() => resolve()); }, delayMs))
+    : invoke();
   // @ts-ignore — provided by Supabase Edge Functions runtime
   if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
     // @ts-ignore
