@@ -520,145 +520,16 @@ const AiTab = ({
 
     // Show "Drafting..." placeholder in the message
     setMessages(prev =>
-      prev.map(m => m.id === assistantMsg!.id ? { ...m, content: "" } : m)
+      prev.map(m => m.id === assistantMsg!.id ? { ...m, content: contentRef.current || "" } : m)
     );
 
     try {
-      // === PHASE 1: Generate (or restore) the draft chapter ===
-      let draftText = "";
-      const isKaggle = activeModel.startsWith("kaggle/");
-      const resumedDraft = resumeJob?.draft_text?.trim() || "";
-      const resumedWorking = resumeJob?.working_text?.trim() || "";
-
-      if (resumedWorking || resumedDraft) {
-        // Already past the draft phase — pick up from saved text.
-        draftText = resumedDraft || resumedWorking;
-        toast("Resuming previous chapter generation…", { duration: 2500 });
-      } else if (isKaggle && resumeJob?.kernel_slug && resumeJob?.kernel_user) {
-        // The Kaggle kernel kept running on Kaggle's servers — just reconnect.
-        toast("Reconnecting to running Kaggle kernel…", { duration: 2500 });
-        if (jobId) await updateJob(jobId, { phase: "kaggle-polling" });
-        draftText = await pollKaggleKernel(resumeJob.kernel_slug, resumeJob.kernel_user);
-        if (jobId) await updateJob(jobId, { phase: "drafting", draft_text: draftText, working_text: draftText });
-      } else if (isKaggle) {
-        const modelEntry = AI_MODELS.find(m => m.id === activeModel);
-        const ctx = modelEntry?.contextWindow ?? 8192;
-
-        if (jobId) await updateJob(jobId, { phase: "kaggle-submitting" });
-        const submitResp = await fetch(KAGGLE_SUBMIT_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            outline,
-            contextBooks,
-            chapterNumber: targetChapter,
-            rewriteNotes: rewrite ? notes : undefined,
-            previousChapters: committedChapters,
-            fullManuscript: documentContent || undefined,
-            wordCountInstruction,
-            wordCountMin: parseInt(wordCountMin) || 3500,
-            wordCountMax: parseInt(wordCountMax) || 4000,
-            perspective: perspective || undefined,
-            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
-            partialContent,
-            styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
-            structuredMemory: styleMemory ? {
-              voiceProfile: styleMemory.voice_profile,
-              styleCache: styleMemory.style_cache,
-              detectedGenre: styleMemory.detected_genre,
-              genreConventions: styleMemory.genre_conventions,
-            } : undefined,
-            checklist: stylePatterns
-              .filter(p => p.confidence >= 0.40)
-              .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
-            ultraContextInjection: ultraContextInjection || undefined,
-            model: activeModel,
-            temperature: aiSettings.temperature,
-            topP: aiSettings.top_p,
-            contextWindow: ctx,
-          }),
-          signal: controller.signal,
-        });
-
-        draftText = await streamKaggleNotebookResult(submitResp, assistantMsg.id);
-        if (jobId) await updateJob(jobId, { phase: "drafting", draft_text: draftText, working_text: draftText });
-      } else {
-        if (jobId) await updateJob(jobId, { phase: "drafting" });
-        const draftResp = await fetch(CHAT_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            outline,
-            contextBooks,
-            chapterNumber: targetChapter,
-            rewriteNotes: rewrite ? notes : undefined,
-            previousChapters: committedChapters,
-            fullManuscript: documentContent || undefined,
-            wordCountInstruction,
-            perspective: perspective || undefined,
-            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
-            styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
-            partialContent,
-            model: activeModel,
-            temperature: aiSettings.temperature,
-            top_p: aiSettings.top_p,
-            structuredMemory: styleMemory ? {
-              voiceProfile: styleMemory.voice_profile,
-              styleCache: styleMemory.style_cache,
-              detectedGenre: styleMemory.detected_genre,
-              genreConventions: styleMemory.genre_conventions,
-            } : undefined,
-            checklist: stylePatterns
-              .filter(p => p.confidence >= 0.40)
-              .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category })),
-            ultraContextInjection: ultraContextInjection || undefined,
-          }),
-          signal: controller.signal,
-        });
-
-        if (!draftResp.ok) {
-          const err = await draftResp.json().catch(() => ({ error: "Generation failed" }));
-          toast.error(err.error || "Generation failed");
-          if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
-          if (jobId) await updateJob(jobId, { status: "failed", error: err.error || "draft failed" });
-          setIsGenerating(false);
-          setEnhancePhase("idle");
-          return;
-        }
-
-        draftText = await readStreamToString(draftResp, controller.signal);
-        if (jobId) await updateJob(jobId, { draft_text: draftText, working_text: draftText });
-      }
-
-      if (!draftText.trim()) {
-        if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
-        toast.error("AI returned an empty response. Try again.");
-        if (jobId) await updateJob(jobId, { status: "failed", error: "empty draft" });
-        setIsGenerating(false);
-        setEnhancePhase("idle");
-        return;
-      }
-
-      contentRef.current = draftText;
-
-      const draftWordCount = countWords(draftText);
-
-      // === HANDOFF: Polish loop runs server-side from here on. ===
-      //
-      // The server orchestrator (chapter-orchestrator edge function) takes
-      // the draft and runs the full enhance -> fact-check -> correct ->
-      // score -> polish loop on its own, persisting progress to the
-      // generation_jobs row. A pg_cron watchdog re-kicks it if any
-      // invocation dies mid-step, so the chapter finishes even with the
-      // tab closed or the phone asleep. The client just subscribes to
-      // realtime updates on this row (see useEffect below) and mirrors
-      // working_text into the assistant message.
+      // === FULL SERVER HANDOFF ===
+      // The entire pipeline (draft -> enhance -> fact-check -> correct ->
+      // score -> polish -> finalize) runs in the chapter-orchestrator
+      // edge function. The client's job is to build the full payload,
+      // persist it on the job row, and kick the orchestrator. Progress
+      // streams back via the realtime subscription on generation_jobs.
       let styleRulesText = "";
       const activePatterns = stylePatterns.filter(p => p.confidence >= 0.40);
       if (activePatterns.length > 0) {
@@ -676,233 +547,123 @@ const AiTab = ({
         .filter(p => p.confidence >= 0.40)
         .map(p => ({ q: p.checklist_question, confidence: p.confidence, locked: p.locked, category: p.category }));
 
-      if (jobId) {
-        // Merge polish context into job.params (orchestrator reads from here).
-        const polishParams = {
-          rewrite: !!rewrite,
-          notes: notes || null,
-          wordCountMin,
-          wordCountMax,
-          perspective: perspective || null,
-          fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : null,
-          contextBundle: factCheckContext,
-          styleRules: styleRulesText,
-          ultraContextInjection: ultraContextInjection || "",
-          checklist: checklistPayload,
-          polishModel: hiddenPolishModel,
-          scoringModel,
-        };
-        // Persist working_text + params + flip phase to 'enhancing' so the
-        // server picks up the polish loop on its first invocation.
-        const { error: handoffErr } = await supabase
+      const isKaggle = activeModel.startsWith("kaggle/");
+      const modelEntry = AI_MODELS.find(m => m.id === activeModel);
+      const ctx = modelEntry?.contextWindow ?? 8192;
+      const structuredMemoryPayload = styleMemory ? {
+        voiceProfile: styleMemory.voice_profile,
+        styleCache: styleMemory.style_cache,
+        detectedGenre: styleMemory.detected_genre,
+        genreConventions: styleMemory.genre_conventions,
+      } : undefined;
+
+      // Body the orchestrator forwards to generate-chapter (non-kaggle) or
+      // kaggle-submit (kaggle/* models). Both accept the same superset.
+      const draftPayload: Record<string, unknown> = {
+        outline,
+        contextBooks,
+        chapterNumber: targetChapter,
+        rewriteNotes: rewrite ? notes : undefined,
+        previousChapters: committedChapters,
+        fullManuscript: documentContent || undefined,
+        wordCountInstruction,
+        wordCountMin: parseInt(wordCountMin) || 3500,
+        wordCountMax: parseInt(wordCountMax) || 4000,
+        perspective: perspective || undefined,
+        fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
+        partialContent,
+        styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
+        structuredMemory: structuredMemoryPayload,
+        checklist: checklistPayload,
+        ultraContextInjection: ultraContextInjection || undefined,
+        model: activeModel,
+        temperature: aiSettings.temperature,
+        top_p: aiSettings.top_p,
+        topP: aiSettings.top_p,
+        contextWindow: ctx,
+      };
+
+      const polishParams = {
+        rewrite: !!rewrite,
+        notes: notes || null,
+        wordCountMin,
+        wordCountMax,
+        perspective: perspective || null,
+        fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : null,
+        contextBundle: factCheckContext,
+        styleRules: styleRulesText,
+        ultraContextInjection: ultraContextInjection || "",
+        checklist: checklistPayload,
+        polishModel: hiddenPolishModel,
+        scoringModel,
+        draftPayload,
+      };
+
+      if (!jobId && projectId && userId) {
+        const created = await createJob({
+          user_id: userId,
+          project_id: projectId,
+          message_id: assistantMsg.id,
+          chapter_number: targetChapter,
+          model: activeModel,
+          params: polishParams,
+        });
+        jobId = created?.id ?? null;
+        jobIdRef.current = jobId;
+      } else if (jobId) {
+        await supabase
           .from("generation_jobs")
           .update({
-            phase: "enhancing",
-            round: 1,
-            working_text: draftText,
-            draft_text: draftText,
             params: polishParams as any,
+            status: "running",
             error: null,
+            message_id: assistantMsg.id,
           })
           .eq("id", jobId);
-        if (handoffErr) {
-          console.warn("Handoff failed, falling back to client polish", handoffErr);
-        } else {
-          // Show the draft in the UI immediately while the server polishes.
-          setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: draftText } : m));
-          await onUpdateMessage(assistantMsg.id, draftText);
-          toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing in background…`, { duration: 3500 });
-
-          // Kick the orchestrator. Fire-and-forget — the watchdog will
-          // re-kick if this single request fails.
-          fetch(ORCHESTRATOR_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-            },
-            body: JSON.stringify({ job_id: jobId }),
-            keepalive: true,
-          }).catch(() => { /* watchdog will pick it up */ });
-
-          // We're done from the client's perspective. Realtime sync handles
-          // the rest. Don't run the local polish loop.
-          setIsGenerating(false);
-          setEnhancePhase("idle");
-          setPhaseIteration(0);
-          generatingMsgIdRef.current = null;
-          jobIdRef.current = null;
-          return;
-        }
       }
 
-      // ----- Fallback client-side polish path (only if handoff failed) -----
-      toast(`Draft complete (${draftWordCount.toLocaleString()} words). Polishing…`, { duration: 2500 });
-
-      const MAX_POLISH_ROUNDS = 3;
-      let workingText = resumedWorking || draftText;
-      let cleanRun = false;
-      const startingRound = Math.max(1, Math.min(MAX_POLISH_ROUNDS, (resumeJob?.round || 0) + 1));
-
-      for (let round = startingRound; round <= MAX_POLISH_ROUNDS; round++) {
-        if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-        setPhaseIteration(round);
-
-        setEnhancePhase("enhancing");
-        if (jobId) await updateJob(jobId, { phase: "enhancing", round, working_text: workingText });
-        try {
-          const { text: enhancedText } = await applyPatchEdits({
-            msgId: assistantMsg.id,
-            baseText: workingText,
-            goal: "enhance",
-            wordCountMin,
-            wordCountMax,
-            checklist: checklistPayload,
-            styleRules: styleRulesText || undefined,
-            ultraContextInjection: ultraContextInjection || undefined,
-            perspective: perspective || undefined,
-            fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
-            contextBundle: factCheckContext,
-            signal: controller.signal,
-          });
-          workingText = enhancedText;
-          if (jobId) await updateJob(jobId, { working_text: workingText });
-        } catch (err: any) {
-          if (err?.name === "AbortError") throw err;
-        }
-
-        setEnhancePhase("fact-checking");
-        if (jobId) await updateJob(jobId, { phase: "fact-checking", working_text: workingText });
-        let issues: any[] = [];
-        if (factCheckContext.trim()) {
-          try {
-            const fcResp = await fetch(FACT_CHECK_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-              },
-              body: JSON.stringify({ chapter: workingText, context: factCheckContext, model: hiddenPolishModel }),
-              signal: controller.signal,
-            });
-            if (fcResp.ok) {
-              const fcData = await fcResp.json();
-              issues = Array.isArray(fcData.issues) ? fcData.issues : [];
-            }
-          } catch (err: any) {
-            if (err?.name === "AbortError") throw err;
-          }
-        }
-
-        if (issues.length > 0) {
-          setEnhancePhase("correcting");
-          if (jobId) await updateJob(jobId, { phase: "correcting", working_text: workingText });
-          try {
-            const { text: correctedText } = await applyPatchEdits({
-              msgId: assistantMsg.id,
-              baseText: workingText,
-              goal: "fix-issues",
-              issues,
-              wordCountMin,
-              wordCountMax,
-              checklist: checklistPayload,
-              styleRules: styleRulesText || undefined,
-              ultraContextInjection: ultraContextInjection || undefined,
-              perspective: perspective || undefined,
-              fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
-              contextBundle: factCheckContext,
-              signal: controller.signal,
-            });
-            workingText = correctedText;
-            if (jobId) await updateJob(jobId, { working_text: workingText });
-          } catch (err: any) {
-            if (err?.name === "AbortError") throw err;
-          }
-        }
-
-        setEnhancePhase("checking");
-        if (jobId) await updateJob(jobId, { phase: "checking", working_text: workingText });
-        let checklistScore = 1;
-        let checklistFailures = 0;
-        if (stylePatterns.length > 0) {
-          try {
-            const result = await onScoreFidelity(workingText, scoringModel);
-            if (result) {
-              checklistScore = result.fidelityScore;
-              checklistFailures = result.failures.filter(f => f.severity === "high" || f.severity === "medium").length;
-            }
-          } catch { /* silent */ }
-        }
-        const factsClean = issues.length === 0;
-        const checklistClean = checklistScore >= 0.85 && checklistFailures === 0;
-        if (factsClean && checklistClean) { cleanRun = true; break; }
-        if (round === MAX_POLISH_ROUNDS) break;
-        setEnhancePhase("polishing");
-        if (jobId) await updateJob(jobId, { phase: "polishing", working_text: workingText });
-      }
-
-      setEnhancePhase("finalizing");
-      contentRef.current = workingText;
-      setMessages(prev => prev.map(m => m.id === assistantMsg!.id ? { ...m, content: workingText } : m));
-      await onUpdateMessage(assistantMsg.id, workingText);
-      if (jobId) await updateJob(jobId, { phase: "finalizing", status: "done", working_text: workingText });
-
-      const finalWordCount = countWords(workingText);
-      toast.success(
-        cleanRun
-          ? `Chapter ready: ${finalWordCount.toLocaleString()} words (clean).`
-          : `Chapter ready: ${finalWordCount.toLocaleString()} words.`,
-        { duration: 4000 }
-      );
-
-
-    } catch (e: any) {
-      // Heuristics: a Kaggle kernel that's still running server-side, OR an
-      // abort/network error that almost certainly came from the tab being
-      // suspended (mobile background, phone sleep, OS killing the tab) should
-      // NOT mark the job as failed/aborted. Leaving status='running' lets
-      // findResumableJob auto-resume on next mount.
-      const isAbort = e?.name === "AbortError";
-      const isNetwork = e?.name === "TypeError" || /failed to fetch|networkerror|load failed/i.test(String(e?.message || ""));
-      const userStopped = !!abortRef.current?.signal.aborted && (controller.signal.reason === "user-stop");
-      const hasKernel = activeModel.startsWith("kaggle/") && jobIdRef.current && (resumeJob?.kernel_slug || enhancePhase === "drafting" || enhancePhase === "polishing" || enhancePhase === "enhancing" || enhancePhase === "fact-checking" || enhancePhase === "correcting" || enhancePhase === "checking");
-
-      if (userStopped) {
-        if (contentRef.current.trim()) {
-          await onUpdateMessage(assistantMsg.id, contentRef.current);
-          toast("Generation stopped. Partial chapter saved.");
-        } else if (!continueMsg && !resumeJob) {
-          await onDeleteMessage(assistantMsg.id);
-        }
-        if (jobIdRef.current) await updateJob(jobIdRef.current, { status: "aborted", working_text: contentRef.current });
+      if (!jobId) {
+        toast.error("Could not start background generation");
+        setIsGenerating(false);
         setEnhancePhase("idle");
         return;
       }
 
-      // Transient interruption (tab suspended, network blip, Kaggle kernel
-      // still cooking) — keep status='running' so the next return/focus resumes it.
-      if (isAbort || isNetwork || hasKernel) {
-        if (contentRef.current.trim()) {
-          await onUpdateMessage(assistantMsg.id, contentRef.current);
-        }
-        if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
-        const justCameFromBackground = Date.now() - lastHiddenAtRef.current < 8000;
-        if (document.visibilityState === "visible" && !justCameFromBackground) {
-          toast("Connection paused — reconnecting automatically.", { duration: 2500 });
-        }
-        setEnhancePhase("idle");
-        return;
-      }
-
-      // Real fatal error from the server
-      if (contentRef.current.trim()) {
-        await onUpdateMessage(assistantMsg.id, contentRef.current);
-        if (jobIdRef.current) await updateJob(jobIdRef.current, { working_text: contentRef.current });
-        toast.error(e.message || "Stream failed (partial chapter saved)");
+      if (resumeJob) {
+        toast("Reconnecting to background generation…", { duration: 2500 });
       } else {
-        toast.error(e.message || "Stream failed");
-        if (!continueMsg && !resumeJob) await onDeleteMessage(assistantMsg.id);
-        if (jobIdRef.current) await updateJob(jobIdRef.current, { status: "failed", error: String(e?.message || e) });
+        toast(isKaggle
+          ? "Kaggle generation queued — runs in the background."
+          : "Generation started — runs in the background.", { duration: 3000 });
+      }
+
+      // Kick the orchestrator (fire-and-forget; watchdog will retry).
+      fetch(ORCHESTRATOR_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ job_id: jobId }),
+        keepalive: true,
+      }).catch(() => { /* watchdog will pick it up */ });
+
+      // From here the server owns the job. Realtime sync mirrors working_text
+      // into the assistant message, and the final "done" toast is fired in
+      // the realtime subscription below.
+      setIsGenerating(false);
+      setEnhancePhase("idle");
+      setPhaseIteration(0);
+      generatingMsgIdRef.current = null;
+      jobIdRef.current = null;
+      return;
+    } catch (e: any) {
+      toast.error(e?.message || "Could not start generation");
+      if (jobIdRef.current) {
+        await updateJob(jobIdRef.current, { status: "failed", error: String(e?.message || e) });
+      }
+      if (!continueMsg && !resumeJob && assistantMsg) {
+        await onDeleteMessage(assistantMsg.id);
       }
     } finally {
       setIsGenerating(false);
@@ -911,7 +672,7 @@ const AiTab = ({
       generatingMsgIdRef.current = null;
       jobIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onUpdateMessage, onDeleteMessage, setMessages, readStreamToString, documentContent, ultraContextInjection, stylePatterns, onScoreFidelity, styleMemory, streamKaggleNotebookResult, applyPatchEdits, projectId, userId, messages, pollKaggleKernel]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages]);
 
   const resumeLatestGeneration = useCallback(async (source: "mount" | "focus" | "online" | "visibility") => {
     if (!projectId || !userId || isGenerating || resumeInFlightRef.current) return;
