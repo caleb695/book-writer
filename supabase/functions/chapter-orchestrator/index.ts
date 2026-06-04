@@ -444,21 +444,24 @@ async function runPhase(job: Job): Promise<void> {
     }
 
     default:
-      // Phases we don't drive here (kaggle-*, drafting). Just release the claim.
+      // Unknown phase. Just release the claim so watchdog can re-evaluate.
       await releaseClaim(job.id);
       return;
   }
 }
 
-// Cron-callable: scan for any running, polish-phase job whose claim has expired
-// and re-kick the orchestrator on it. Idempotent.
+// Cron-callable: scan for any running job whose claim has expired and re-kick
+// the orchestrator on it. Idempotent.
 async function runWatchdog(): Promise<{ kicked: number }> {
   const cutoff = new Date(Date.now() - CLAIM_TTL_MS).toISOString();
   const { data, error } = await admin
     .from("generation_jobs")
     .select("id, phase, claimed_at, updated_at")
     .eq("status", "running")
-    .in("phase", ["enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing"])
+    .in("phase", [
+      "starting", "drafting", "kaggle-submitting", "kaggle-polling",
+      "enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing",
+    ])
     .or(`claimed_at.is.null,claimed_at.lt.${cutoff}`)
     .lt("updated_at", cutoff)
     .limit(20);
