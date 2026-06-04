@@ -30,9 +30,13 @@ const PATCH_URL = `${FN_BASE}/patch-chapter`;
 const FACT_CHECK_URL = `${FN_BASE}/fact-check-chapter`;
 const SCORE_URL = `${FN_BASE}/score-fidelity`;
 const SELF_URL = `${FN_BASE}/chapter-orchestrator`;
+const GENERATE_URL = `${FN_BASE}/generate-chapter`;
+const KAGGLE_SUBMIT_URL = `${FN_BASE}/kaggle-submit`;
+const KAGGLE_RESULT_URL = `${FN_BASE}/kaggle-result`;
 
 const MAX_POLISH_ROUNDS = 3;
 const CLAIM_TTL_MS = 90_000; // a claim older than this is considered abandoned
+const KAGGLE_POLL_INTERVAL_MS = 15_000;
 
 type Phase =
   | "starting"
@@ -89,10 +93,10 @@ function callOther(url: string, body: unknown): Promise<Response> {
   });
 }
 
-function fireAndForgetSelf(job_id: string): void {
+function fireAndForgetSelf(job_id: string, delayMs = 0): void {
   // Re-invoke this same function so the next phase runs without the caller
   // having to wait. waitUntil keeps the runtime alive long enough to flush.
-  const p = fetch(SELF_URL, {
+  const invoke = () => fetch(SELF_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -101,6 +105,9 @@ function fireAndForgetSelf(job_id: string): void {
     },
     body: JSON.stringify({ job_id }),
   }).catch((e) => console.warn("self-invoke failed", e));
+  const p = delayMs > 0
+    ? new Promise<void>((resolve) => setTimeout(() => { invoke().finally(() => resolve()); }, delayMs))
+    : invoke();
   // @ts-ignore — provided by Supabase Edge Functions runtime
   if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
     // @ts-ignore
@@ -172,15 +179,124 @@ async function runPhase(job: Job): Promise<void> {
   const scoringModel: string = p.scoringModel || "mistral-large-latest";
 
   let working = job.working_text || job.draft_text || "";
-  if (!working.trim()) {
+  const POLISH_PHASES = new Set(["enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing"]);
+  if (POLISH_PHASES.has(job.phase) && !working.trim()) {
     return failJob(job.id, "empty working_text — cannot polish");
   }
 
   const round = Math.max(1, job.round || 1);
 
   switch (job.phase) {
-    case "starting":
-    case "drafting":
+    case "starting": {
+      // Decide whether we need to draft or skip straight to polish.
+      const hasWorking = (job.working_text || "").trim().length > 0;
+      const hasDraft = (job.draft_text || "").trim().length > 0;
+      if (hasWorking || hasDraft) {
+        await patchJob(job.id, { phase: "enhancing", round: 1, claimed_at: null } as any);
+      } else if (job.model.startsWith("kaggle/")) {
+        await patchJob(job.id, { phase: "kaggle-submitting", claimed_at: null } as any);
+      } else {
+        await patchJob(job.id, { phase: "drafting", claimed_at: null } as any);
+      }
+      fireAndForgetSelf(job.id);
+      return;
+    }
+
+    case "drafting": {
+      // Non-Kaggle: call generate-chapter and collect the streamed text.
+      console.log(`[orchestrator] job ${job.id} DRAFT (${job.model})`);
+      const draftPayload = (p.draftPayload && typeof p.draftPayload === "object") ? p.draftPayload : null;
+      if (!draftPayload) return failJob(job.id, "missing draftPayload in job.params");
+
+      const resp = await callOther(GENERATE_URL, draftPayload);
+      if (!resp.ok || !resp.body) {
+        const errText = await resp.text().catch(() => "");
+        return failJob(job.id, `generate-chapter failed (${resp.status}): ${errText.slice(0, 300)}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "";
+      let lastFlush = Date.now();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        // Periodically flush working_text so the UI sees progress.
+        if (Date.now() - lastFlush > 2500) {
+          lastFlush = Date.now();
+          await patchJob(job.id, { working_text: acc } as any);
+        }
+      }
+      acc += decoder.decode();
+      if (!acc.trim()) return failJob(job.id, "generate-chapter returned empty stream");
+
+      await patchJob(job.id, {
+        draft_text: acc,
+        working_text: acc,
+        phase: "enhancing",
+        round: 1,
+        claimed_at: null,
+      } as any);
+      fireAndForgetSelf(job.id);
+      return;
+    }
+
+    case "kaggle-submitting": {
+      console.log(`[orchestrator] job ${job.id} KAGGLE-SUBMIT`);
+      const draftPayload = (p.draftPayload && typeof p.draftPayload === "object") ? p.draftPayload : null;
+      if (!draftPayload) return failJob(job.id, "missing draftPayload in job.params");
+      const resp = await callOther(KAGGLE_SUBMIT_URL, draftPayload);
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.kernelSlug || !data?.userName) {
+        return failJob(job.id, `kaggle-submit failed: ${data?.error || resp.status}`);
+      }
+      await patchJob(job.id, {
+        phase: "kaggle-polling",
+        kernel_slug: data.kernelSlug,
+        kernel_user: data.userName,
+        claimed_at: null,
+      } as any);
+      fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
+      return;
+    }
+
+    case "kaggle-polling": {
+      if (!job.kernel_slug || !job.kernel_user) {
+        return failJob(job.id, "missing kernel handle for polling");
+      }
+      const u = `${KAGGLE_RESULT_URL}?userName=${encodeURIComponent(job.kernel_user)}&kernelSlug=${encodeURIComponent(job.kernel_slug)}`;
+      const resp = await fetch(u, {
+        headers: {
+          Authorization: `Bearer ${ANON_KEY}`,
+          apikey: ANON_KEY,
+        },
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        return failJob(job.id, `kaggle-result failed: ${data?.error || resp.status}`);
+      }
+      if (!data?.done) {
+        // Still running — just release and re-poll later.
+        await patchJob(job.id, { claimed_at: null } as any);
+        fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
+        return;
+      }
+      const result = data.result;
+      if (!result?.ok || !String(result.content || "").trim()) {
+        return failJob(job.id, result?.error || "kaggle kernel returned empty content");
+      }
+      const text = String(result.content).trim();
+      await patchJob(job.id, {
+        draft_text: text,
+        working_text: text,
+        phase: "enhancing",
+        round: 1,
+        claimed_at: null,
+      } as any);
+      fireAndForgetSelf(job.id);
+      return;
+    }
+
     case "enhancing": {
       console.log(`[orchestrator] job ${job.id} round ${round} ENHANCE`);
       const resp = await callOther(PATCH_URL, {
@@ -328,21 +444,24 @@ async function runPhase(job: Job): Promise<void> {
     }
 
     default:
-      // Phases we don't drive here (kaggle-*, drafting). Just release the claim.
+      // Unknown phase. Just release the claim so watchdog can re-evaluate.
       await releaseClaim(job.id);
       return;
   }
 }
 
-// Cron-callable: scan for any running, polish-phase job whose claim has expired
-// and re-kick the orchestrator on it. Idempotent.
+// Cron-callable: scan for any running job whose claim has expired and re-kick
+// the orchestrator on it. Idempotent.
 async function runWatchdog(): Promise<{ kicked: number }> {
   const cutoff = new Date(Date.now() - CLAIM_TTL_MS).toISOString();
   const { data, error } = await admin
     .from("generation_jobs")
     .select("id, phase, claimed_at, updated_at")
     .eq("status", "running")
-    .in("phase", ["enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing"])
+    .in("phase", [
+      "starting", "drafting", "kaggle-submitting", "kaggle-polling",
+      "enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing",
+    ])
     .or(`claimed_at.is.null,claimed_at.lt.${cutoff}`)
     .lt("updated_at", cutoff)
     .limit(20);
