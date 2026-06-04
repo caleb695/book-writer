@@ -63,6 +63,7 @@ const PATCH_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/patch-chapt
 const FACT_CHECK_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-chapter`;
 const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-submit`;
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
+const ORCHESTRATOR_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chapter-orchestrator`;
 
 const AiTab = ({
   projectId, userId,
