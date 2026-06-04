@@ -221,10 +221,11 @@ async function runPhase(job: Job): Promise<void> {
         const { value, done } = await reader.read();
         if (done) break;
         acc += decoder.decode(value, { stream: true });
-        // Periodically flush working_text so the UI sees progress.
+        // Periodically flush working_text + heartbeat claim so the UI sees
+        // progress and the watchdog doesn't steal an in-flight long draft.
         if (Date.now() - lastFlush > 2500) {
           lastFlush = Date.now();
-          await patchJob(job.id, { working_text: acc } as any);
+          await patchJob(job.id, { working_text: acc, claimed_at: new Date().toISOString() } as any);
         }
       }
       acc += decoder.decode();
