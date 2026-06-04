@@ -30,9 +30,13 @@ const PATCH_URL = `${FN_BASE}/patch-chapter`;
 const FACT_CHECK_URL = `${FN_BASE}/fact-check-chapter`;
 const SCORE_URL = `${FN_BASE}/score-fidelity`;
 const SELF_URL = `${FN_BASE}/chapter-orchestrator`;
+const GENERATE_URL = `${FN_BASE}/generate-chapter`;
+const KAGGLE_SUBMIT_URL = `${FN_BASE}/kaggle-submit`;
+const KAGGLE_RESULT_URL = `${FN_BASE}/kaggle-result`;
 
 const MAX_POLISH_ROUNDS = 3;
 const CLAIM_TTL_MS = 90_000; // a claim older than this is considered abandoned
+const KAGGLE_POLL_INTERVAL_MS = 15_000;
 
 type Phase =
   | "starting"
