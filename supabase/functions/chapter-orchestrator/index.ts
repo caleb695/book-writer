@@ -455,29 +455,45 @@ async function runPhase(job: Job): Promise<void> {
   }
 }
 
-// Cron-callable: scan for any running job whose claim has expired and re-kick
-// the orchestrator on it. Idempotent.
+// Cron-callable: scan for any running job that needs a re-kick. Idempotent.
+// Two buckets:
+//  (a) Jobs in active work phases stalled past CLAIM_TTL_MS (stuck/crashed run).
+//  (b) Jobs in kaggle-polling that haven't been touched in POLL_STALE_MS — the
+//      in-process setTimeout self-poll often dies when the edge runtime spins
+//      down, so the watchdog needs to keep polling moving on its own.
 async function runWatchdog(): Promise<{ kicked: number }> {
-  const cutoff = new Date(Date.now() - CLAIM_TTL_MS).toISOString();
-  const { data, error } = await admin
+  const claimCutoff = new Date(Date.now() - CLAIM_TTL_MS).toISOString();
+  const pollCutoff = new Date(Date.now() - (KAGGLE_POLL_INTERVAL_MS + 10_000)).toISOString();
+  const ids = new Set<string>();
+
+  const { data: stalled, error: e1 } = await admin
     .from("generation_jobs")
-    .select("id, phase, claimed_at, updated_at")
+    .select("id")
     .eq("status", "running")
     .in("phase", [
-      "starting", "drafting", "kaggle-submitting", "kaggle-polling",
+      "starting", "drafting", "kaggle-submitting",
       "enhancing", "fact-checking", "correcting", "checking", "polishing", "finalizing",
     ])
-    .or(`claimed_at.is.null,claimed_at.lt.${cutoff}`)
-    .lt("updated_at", cutoff)
+    .or(`claimed_at.is.null,claimed_at.lt.${claimCutoff}`)
+    .lt("updated_at", claimCutoff)
     .limit(20);
-  if (error) {
-    console.warn("watchdog query failed", error);
-    return { kicked: 0 };
-  }
-  for (const j of data || []) {
-    fireAndForgetSelf((j as any).id);
-  }
-  return { kicked: (data || []).length };
+  if (e1) console.warn("watchdog stalled query failed", e1);
+  for (const j of stalled || []) ids.add((j as any).id);
+
+  const { data: polling, error: e2 } = await admin
+    .from("generation_jobs")
+    .select("id")
+    .eq("status", "running")
+    .eq("phase", "kaggle-polling")
+    .or(`claimed_at.is.null,claimed_at.lt.${claimCutoff}`)
+    .lt("updated_at", pollCutoff)
+    .limit(20);
+  if (e2) console.warn("watchdog polling query failed", e2);
+  for (const j of polling || []) ids.add((j as any).id);
+
+  for (const id of ids) fireAndForgetSelf(id);
+  if (ids.size > 0) console.log(`[orchestrator] watchdog kicked ${ids.size} jobs`);
+  return { kicked: ids.size };
 }
 
 serve(async (req) => {
