@@ -674,52 +674,39 @@ const AiTab = ({
     }
   }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages]);
 
-  const resumeLatestGeneration = useCallback(async (source: "mount" | "focus" | "online" | "visibility") => {
-    if (!projectId || !userId || isGenerating || resumeInFlightRef.current) return;
-    resumeInFlightRef.current = true;
-    try {
-      await reapStaleJobs(projectId);
-      const job = await findResumableJob(projectId);
-      if (!job || isGenerating) return;
-      if (source !== "mount") {
-        toast("Reconnecting to the running chapter…", { duration: 2200 });
-      } else {
-        toast("Resuming previous chapter generation…", { duration: 2200 });
-      }
-      window.setTimeout(() => {
-        streamGenerate(false, undefined, undefined, job);
-      }, 250);
-    } finally {
-      window.setTimeout(() => {
-        resumeInFlightRef.current = false;
-      }, 1200);
-    }
-  }, [projectId, userId, isGenerating, streamGenerate]);
-
-  // --- Resume detection ---
-  // Auto-resume not only on mount, but also when the user returns to the same
-  // open tab after backgrounding the browser or waking the device.
+  // Mount-only reattach. The server orchestrator + pg_cron watchdog drive the
+  // job to completion; the client only needs to (a) reap clearly-dead jobs and
+  // (b) nudge the orchestrator once in case the watchdog hasn't fired yet.
+  // Realtime subscription below streams working_text into the assistant
+  // message, so focus/visibility/online events do NOT need to re-run anything
+  // — doing so was causing repeated "Reconnecting…" toasts on every tab focus.
   useEffect(() => {
     if (!projectId || !userId) return;
-    void resumeLatestGeneration("mount");
-
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void resumeLatestGeneration("visibility");
+    let cancelled = false;
+    (async () => {
+      try {
+        await reapStaleJobs(projectId);
+        const job = await findResumableJob(projectId);
+        if (cancelled || !job) return;
+        if (job.message_id && (job.working_text || "").trim()) {
+          setMessages(prev => prev.map(m => m.id === job.message_id ? { ...m, content: job.working_text } : m));
+        }
+        fetch(ORCHESTRATOR_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({ job_id: job.id }),
+          keepalive: true,
+        }).catch(() => { /* watchdog will pick it up */ });
+      } catch (e) {
+        console.warn("resume check failed", e);
       }
-    };
-    const handleFocus = () => void resumeLatestGeneration("focus");
-    const handleOnline = () => void resumeLatestGeneration("online");
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, userId, setMessages]);
 
-    document.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("focus", handleFocus);
-    window.addEventListener("online", handleOnline);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("online", handleOnline);
-    };
-  }, [projectId, userId, resumeLatestGeneration]);
 
   // --- Realtime subscription on generation_jobs ---
   // While the server orchestrator is polishing the chapter in the background,
