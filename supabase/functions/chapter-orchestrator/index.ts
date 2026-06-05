@@ -262,6 +262,7 @@ async function runPhase(job: Job): Promise<void> {
     }
 
     case "kaggle-polling": {
+      console.log(`[orchestrator] job ${job.id} KAGGLE-POLL (${job.kernel_user}/${job.kernel_slug})`);
       if (!job.kernel_slug || !job.kernel_user) {
         return failJob(job.id, "missing kernel handle for polling");
       }
@@ -277,7 +278,10 @@ async function runPhase(job: Job): Promise<void> {
         return failJob(job.id, `kaggle-result failed: ${data?.error || resp.status}`);
       }
       if (!data?.done) {
-        // Still running — just release and re-poll later.
+        // Still running — release the claim. The pg_cron watchdog will re-kick
+        // us within ~60s; we also fire a delayed self-invoke for faster polling
+        // when the runtime cooperates. Either path is safe (claimJob is atomic).
+        console.log(`[orchestrator] job ${job.id} kaggle still running, will re-poll`);
         await patchJob(job.id, { claimed_at: null } as any);
         fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
         return;
