@@ -1171,12 +1171,12 @@ const AiTab = ({
               <div className="prose prose-sm max-w-none font-manuscript text-foreground leading-relaxed">
                 {msg.content ? (
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
-                ) : (backgroundJobs[msg.id]?.status === "running" ? (
+                ) : backgroundJobs[msg.id]?.status === "running" ? (
                   <div className="flex items-center gap-2 text-muted-foreground not-prose">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
                   </div>
-                ) : (isGenerating && generatingMsgIdRef.current === msg.id ? (
+                ) : isGenerating && generatingMsgIdRef.current === msg.id ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="text-sm">
@@ -1190,7 +1190,7 @@ const AiTab = ({
                        "Planning chapter…"}
                     </span>
                   </div>
-                ) : "")}
+                ) : ""}
               </div>
               {msg.content && !(isGenerating && generatingMsgIdRef.current === msg.id) && (
                 <div className="flex items-center gap-2 flex-wrap">
