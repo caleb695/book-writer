@@ -710,6 +710,12 @@ const AiTab = ({
         await reapStaleJobs(projectId);
         const job = await findResumableJob(projectId);
         if (cancelled || !job) return;
+        if (job.message_id) {
+          setBackgroundJobs(prev => ({
+            ...prev,
+            [job.message_id!]: { phase: job.phase, status: job.status, error: job.error },
+          }));
+        }
         if (job.message_id && (job.working_text || "").trim()) {
           setMessages(prev => prev.map(m => m.id === job.message_id ? { ...m, content: job.working_text } : m));
         }
@@ -1165,6 +1171,11 @@ const AiTab = ({
               <div className="prose prose-sm max-w-none font-manuscript text-foreground leading-relaxed">
                 {msg.content ? (
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
+                ) : (backgroundJobs[msg.id]?.status === "running" ? (
+                  <div className="flex items-center gap-2 text-muted-foreground not-prose">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                  </div>
                 ) : (isGenerating && generatingMsgIdRef.current === msg.id ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
