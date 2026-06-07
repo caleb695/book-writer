@@ -66,6 +66,23 @@ const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kag
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 const ORCHESTRATOR_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chapter-orchestrator`;
 
+type BackgroundJobStatus = "running" | "done" | "failed" | "aborted";
+
+const backgroundPhaseLabel = (phase?: JobPhase) => {
+  switch (phase) {
+    case "kaggle-submitting": return "Submitting chapter job…";
+    case "kaggle-polling": return "Chapter generation running in the background…";
+    case "drafting": return "Generating draft in the background…";
+    case "enhancing": return "Enhancing prose…";
+    case "fact-checking": return "Fact-checking against context…";
+    case "correcting": return "Correcting details…";
+    case "checking": return "Running quality checklist…";
+    case "polishing": return "Polishing chapter…";
+    case "finalizing": return "Finalizing chapter…";
+    default: return "Chapter generation queued…";
+  }
+};
+
 const AiTab = ({
   projectId, userId,
   files, messages, documentContent,
@@ -88,6 +105,7 @@ const AiTab = ({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [fictionSearch, setFictionSearch] = useState("");
   const [fictionDropdownOpen, setFictionDropdownOpen] = useState(false);
+  const [backgroundJobs, setBackgroundJobs] = useState<Record<string, { phase: JobPhase; status: BackgroundJobStatus; error?: string | null }>>({});
   const contentRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -628,6 +646,10 @@ const AiTab = ({
         setEnhancePhase("idle");
         return;
       }
+      setBackgroundJobs(prev => ({
+        ...prev,
+        [assistantMsg.id]: { phase: "starting", status: "running", error: null },
+      }));
 
       if (resumeJob) {
         toast("Reconnecting to background generation…", { duration: 2500 });
@@ -688,6 +710,12 @@ const AiTab = ({
         await reapStaleJobs(projectId);
         const job = await findResumableJob(projectId);
         if (cancelled || !job) return;
+        if (job.message_id) {
+          setBackgroundJobs(prev => ({
+            ...prev,
+            [job.message_id!]: { phase: job.phase, status: job.status, error: job.error },
+          }));
+        }
         if (job.message_id && (job.working_text || "").trim()) {
           setMessages(prev => prev.map(m => m.id === job.message_id ? { ...m, content: job.working_text } : m));
         }
@@ -725,6 +753,17 @@ const AiTab = ({
           if (!row || row.user_id !== userId) return;
           const msgId: string | null = row.message_id;
           const text: string = row.working_text || "";
+          if (msgId) {
+            setBackgroundJobs(prev => {
+              const next = { ...prev };
+              if (row.status === "done" || row.status === "aborted") {
+                delete next[msgId];
+              } else {
+                next[msgId] = { phase: row.phase, status: row.status, error: row.error };
+              }
+              return next;
+            });
+          }
           if (msgId && text.trim()) {
             setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
           }
@@ -1132,7 +1171,12 @@ const AiTab = ({
               <div className="prose prose-sm max-w-none font-manuscript text-foreground leading-relaxed">
                 {msg.content ? (
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
-                ) : (isGenerating && generatingMsgIdRef.current === msg.id ? (
+                ) : backgroundJobs[msg.id]?.status === "running" ? (
+                  <div className="flex items-center gap-2 text-muted-foreground not-prose">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                  </div>
+                ) : isGenerating && generatingMsgIdRef.current === msg.id ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="text-sm">
@@ -1146,7 +1190,7 @@ const AiTab = ({
                        "Planning chapter…"}
                     </span>
                   </div>
-                ) : "")}
+                ) : ""}
               </div>
               {msg.content && !(isGenerating && generatingMsgIdRef.current === msg.id) && (
                 <div className="flex items-center gap-2 flex-wrap">

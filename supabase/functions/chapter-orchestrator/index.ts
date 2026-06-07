@@ -144,7 +144,10 @@ async function releaseClaim(job_id: string): Promise<void> {
 }
 
 async function patchJob(job_id: string, patch: Partial<Job>): Promise<void> {
-  const { error } = await admin.from("generation_jobs").update(patch).eq("id", job_id);
+  const { error } = await admin
+    .from("generation_jobs")
+    .update({ ...patch, updated_at: new Date().toISOString() } as any)
+    .eq("id", job_id);
   if (error) console.warn("patchJob failed", error);
 }
 
@@ -275,6 +278,13 @@ async function runPhase(job: Job): Promise<void> {
       });
       const data = await resp.json().catch(() => null);
       if (!resp.ok) {
+        const retryable = resp.status === 429 || resp.status >= 500 || data?.retryable === true;
+        if (retryable) {
+          console.warn(`[orchestrator] job ${job.id} kaggle-result transient failure: ${data?.error || resp.status}`);
+          await patchJob(job.id, { claimed_at: null, error: `temporary kaggle-result issue: ${data?.error || resp.status}` } as any);
+          fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
+          return;
+        }
         return failJob(job.id, `kaggle-result failed: ${data?.error || resp.status}`);
       }
       if (!data?.done) {
@@ -282,7 +292,7 @@ async function runPhase(job: Job): Promise<void> {
         // us within ~60s; we also fire a delayed self-invoke for faster polling
         // when the runtime cooperates. Either path is safe (claimJob is atomic).
         console.log(`[orchestrator] job ${job.id} kaggle still running, will re-poll`);
-        await patchJob(job.id, { claimed_at: null } as any);
+        await patchJob(job.id, { claimed_at: null, error: data?.retryable ? `temporary kaggle-result issue: ${data?.error || "retrying"}` : null } as any);
         fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
         return;
       }
@@ -296,6 +306,7 @@ async function runPhase(job: Job): Promise<void> {
         working_text: text,
         phase: "enhancing",
         round: 1,
+        error: null,
         claimed_at: null,
       } as any);
       fireAndForgetSelf(job.id);
@@ -444,7 +455,7 @@ async function runPhase(job: Job): Promise<void> {
           .eq("id", job.message_id);
         if (error) console.warn("ai_message update failed", error);
       }
-      await patchJob(job.id, { status: "done", working_text: working, claimed_at: null } as any);
+      await patchJob(job.id, { status: "done", working_text: working, error: null, claimed_at: null } as any);
       return;
     }
 
