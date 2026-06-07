@@ -646,6 +646,10 @@ const AiTab = ({
         setEnhancePhase("idle");
         return;
       }
+      setBackgroundJobs(prev => ({
+        ...prev,
+        [assistantMsg.id]: { phase: "starting", status: "running", error: null },
+      }));
 
       if (resumeJob) {
         toast("Reconnecting to background generation…", { duration: 2500 });
@@ -743,6 +747,17 @@ const AiTab = ({
           if (!row || row.user_id !== userId) return;
           const msgId: string | null = row.message_id;
           const text: string = row.working_text || "";
+          if (msgId) {
+            setBackgroundJobs(prev => {
+              const next = { ...prev };
+              if (row.status === "done" || row.status === "aborted") {
+                delete next[msgId];
+              } else {
+                next[msgId] = { phase: row.phase, status: row.status, error: row.error };
+              }
+              return next;
+            });
+          }
           if (msgId && text.trim()) {
             setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
           }
