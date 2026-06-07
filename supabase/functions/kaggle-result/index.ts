@@ -29,20 +29,38 @@ serve(async (req) => {
 
     const headers = { Authorization: `Bearer ${KAGGLE_KEY}` };
 
+    const outputUrl = `${KAGGLE_BASE}/kernels/output?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`;
     const statusResp = await fetch(`${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`, { headers });
-    if (!statusResp.ok) {
-      const retryable = statusResp.status === 429 || statusResp.status >= 500;
-      return json({ error: `status ${statusResp.status}`, retryable }, retryable ? 503 : 502);
+    let status: any = {};
+    let state = "unknown";
+    if (statusResp.ok) {
+      status = await statusResp.json().catch(() => ({}));
+      state = status.status || "unknown";
+    } else {
+      // Kaggle's status endpoint sometimes returns 5xx for a valid running or
+      // just-finished notebook. Don't fail the chapter immediately; try the
+      // output endpoint below and otherwise report a retryable poll.
+      state = "unknown";
     }
-    const status = await statusResp.json();
-
-    const state: string = status.status || "unknown";
     if (state !== "complete" && state !== "error") {
-      return json({ status: state, done: false });
+      const outResp = await fetch(outputUrl, { headers });
+      if (!outResp.ok) {
+        const retryable = statusResp.status === 429 || statusResp.status >= 500 || outResp.status === 429 || outResp.status >= 500;
+        return json({ status: state, done: false, retryable, error: statusResp.ok ? undefined : `status ${statusResp.status}` }, retryable ? 503 : 200);
+      }
+      const out = await outResp.json().catch(() => ({}));
+      const files: Array<{ fileName: string; url: string }> = out.files || [];
+      const target = files.find((f) => f.fileName === "loomink_output.json");
+      if (!target) return json({ status: state, done: false, retryable: true, error: statusResp.ok ? undefined : `status ${statusResp.status}` });
+      const fileResp = await fetch(target.url);
+      if (!fileResp.ok) return json({ status: state, done: false, retryable: true, error: `output file fetch ${fileResp.status}` }, fileResp.status >= 500 ? 503 : 200);
+      const parsed = await fileResp.json().catch(() => null);
+      if (!parsed) return json({ status: state, done: false, retryable: true, error: "output file not valid JSON yet" });
+      return json({ status: "complete", done: true, result: parsed });
     }
 
     // Fetch output file listing
-    const outResp = await fetch(`${KAGGLE_BASE}/kernels/output?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`, { headers });
+    const outResp = await fetch(outputUrl, { headers });
     if (!outResp.ok) {
       const retryable = outResp.status === 429 || outResp.status >= 500;
       return json({ status: state, done: !retryable, retryable, error: `could not fetch output listing (${outResp.status})` }, retryable ? 503 : 200);
