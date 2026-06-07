@@ -66,6 +66,23 @@ const KAGGLE_SUBMIT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kag
 const KAGGLE_RESULT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/kaggle-result`;
 const ORCHESTRATOR_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chapter-orchestrator`;
 
+type BackgroundJobStatus = "running" | "done" | "failed" | "aborted";
+
+const backgroundPhaseLabel = (phase?: JobPhase) => {
+  switch (phase) {
+    case "kaggle-submitting": return "Submitting chapter job…";
+    case "kaggle-polling": return "Chapter generation running in the background…";
+    case "drafting": return "Generating draft in the background…";
+    case "enhancing": return "Enhancing prose…";
+    case "fact-checking": return "Fact-checking against context…";
+    case "correcting": return "Correcting details…";
+    case "checking": return "Running quality checklist…";
+    case "polishing": return "Polishing chapter…";
+    case "finalizing": return "Finalizing chapter…";
+    default: return "Chapter generation queued…";
+  }
+};
+
 const AiTab = ({
   projectId, userId,
   files, messages, documentContent,
@@ -88,6 +105,7 @@ const AiTab = ({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [fictionSearch, setFictionSearch] = useState("");
   const [fictionDropdownOpen, setFictionDropdownOpen] = useState(false);
+  const [backgroundJobs, setBackgroundJobs] = useState<Record<string, { phase: JobPhase; status: BackgroundJobStatus; error?: string | null }>>({});
   const contentRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
