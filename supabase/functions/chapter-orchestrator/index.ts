@@ -275,6 +275,13 @@ async function runPhase(job: Job): Promise<void> {
       });
       const data = await resp.json().catch(() => null);
       if (!resp.ok) {
+        const retryable = resp.status === 429 || resp.status >= 500 || data?.retryable === true;
+        if (retryable) {
+          console.warn(`[orchestrator] job ${job.id} kaggle-result transient failure: ${data?.error || resp.status}`);
+          await patchJob(job.id, { claimed_at: null, error: `temporary kaggle-result issue: ${data?.error || resp.status}` } as any);
+          fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
+          return;
+        }
         return failJob(job.id, `kaggle-result failed: ${data?.error || resp.status}`);
       }
       if (!data?.done) {
@@ -282,7 +289,7 @@ async function runPhase(job: Job): Promise<void> {
         // us within ~60s; we also fire a delayed self-invoke for faster polling
         // when the runtime cooperates. Either path is safe (claimJob is atomic).
         console.log(`[orchestrator] job ${job.id} kaggle still running, will re-poll`);
-        await patchJob(job.id, { claimed_at: null } as any);
+        await patchJob(job.id, { claimed_at: null, error: data?.retryable ? `temporary kaggle-result issue: ${data?.error || "retrying"}` : null } as any);
         fireAndForgetSelf(job.id, KAGGLE_POLL_INTERVAL_MS);
         return;
       }
