@@ -30,7 +30,10 @@ serve(async (req) => {
     const headers = { Authorization: `Bearer ${KAGGLE_KEY}` };
 
     const statusResp = await fetch(`${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`, { headers });
-    if (!statusResp.ok) return json({ error: `status ${statusResp.status}` }, 502);
+    if (!statusResp.ok) {
+      const retryable = statusResp.status === 429 || statusResp.status >= 500;
+      return json({ error: `status ${statusResp.status}`, retryable }, retryable ? 503 : 502);
+    }
     const status = await statusResp.json();
 
     const state: string = status.status || "unknown";
@@ -40,21 +43,28 @@ serve(async (req) => {
 
     // Fetch output file listing
     const outResp = await fetch(`${KAGGLE_BASE}/kernels/output?userName=${encodeURIComponent(userName)}&kernelSlug=${encodeURIComponent(kernelSlug)}`, { headers });
-    if (!outResp.ok) return json({ status: state, done: true, error: "could not fetch output listing" });
+    if (!outResp.ok) {
+      const retryable = outResp.status === 429 || outResp.status >= 500;
+      return json({ status: state, done: !retryable, retryable, error: `could not fetch output listing (${outResp.status})` }, retryable ? 503 : 200);
+    }
     const out = await outResp.json();
     const files: Array<{ fileName: string; url: string }> = out.files || [];
     const target = files.find((f) => f.fileName === "loomink_output.json");
 
     if (!target) {
       return json({
-        status: state, done: true,
+        status: state, done: state === "error",
+        retryable: state !== "error",
         error: state === "error" ? (status.failureMessage || "notebook failed before producing output") : "output file missing",
         log: (out.log || "").slice(-2000),
       });
     }
 
     const fileResp = await fetch(target.url);
-    if (!fileResp.ok) return json({ status: state, done: true, error: `output file fetch ${fileResp.status}` });
+    if (!fileResp.ok) {
+      const retryable = fileResp.status === 429 || fileResp.status >= 500;
+      return json({ status: state, done: !retryable, retryable, error: `output file fetch ${fileResp.status}` }, retryable ? 503 : 200);
+    }
     const parsed = await fileResp.json().catch(() => null);
     if (!parsed) return json({ status: state, done: true, error: "output file not valid JSON" });
 
