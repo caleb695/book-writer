@@ -713,7 +713,7 @@ const AiTab = ({
         if (job.message_id) {
           setBackgroundJobs(prev => ({
             ...prev,
-            [job.message_id!]: { phase: job.phase, status: job.status, error: job.error },
+            [job.message_id!]: { jobId: job.id, phase: job.phase, status: job.status, error: job.error },
           }));
         }
         if (job.message_id && (job.working_text || "").trim()) {
