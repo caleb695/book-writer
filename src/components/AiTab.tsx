@@ -759,7 +759,7 @@ const AiTab = ({
               if (row.status === "done" || row.status === "aborted") {
                 delete next[msgId];
               } else {
-                next[msgId] = { phase: row.phase, status: row.status, error: row.error };
+                next[msgId] = { jobId: row.id, phase: row.phase, status: row.status, error: row.error };
               }
               return next;
             });
