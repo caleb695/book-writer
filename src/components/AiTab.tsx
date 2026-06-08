@@ -190,6 +190,25 @@ const AiTab = ({
     setIsGenerating(false);
   }, []);
 
+  const handleCancelBackground = useCallback(async (msgId: string) => {
+    const entry = backgroundJobs[msgId];
+    if (!entry?.jobId) return;
+    setBackgroundJobs(prev => {
+      const next = { ...prev };
+      delete next[msgId];
+      return next;
+    });
+    const { error } = await supabase
+      .from("generation_jobs")
+      .update({ status: "aborted", error: "cancelled by user", claimed_at: null })
+      .eq("id", entry.jobId);
+    if (error) {
+      toast.error("Failed to cancel generation");
+      return;
+    }
+    toast("Background generation cancelled.", { duration: 2500 });
+  }, [backgroundJobs]);
+
   const handleCopy = useCallback((content: string) => {
     navigator.clipboard.writeText(content).then(() => {
       toast.success("Chapter copied to clipboard");
