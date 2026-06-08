@@ -1191,9 +1191,17 @@ const AiTab = ({
                 {msg.content ? (
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
                 ) : backgroundJobs[msg.id]?.status === "running" ? (
-                  <div className="flex items-center gap-2 text-muted-foreground not-prose">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                  <div className="flex items-center gap-3 text-muted-foreground not-prose flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                    </div>
+                    <button
+                      onClick={() => handleCancelBackground(msg.id)}
+                      className="text-xs px-2.5 py-1 rounded-md border border-border hover:bg-muted text-foreground"
+                    >
+                      Cancel
+                    </button>
                   </div>
                 ) : isGenerating && generatingMsgIdRef.current === msg.id ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
