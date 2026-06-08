@@ -105,7 +105,7 @@ const AiTab = ({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [fictionSearch, setFictionSearch] = useState("");
   const [fictionDropdownOpen, setFictionDropdownOpen] = useState(false);
-  const [backgroundJobs, setBackgroundJobs] = useState<Record<string, { phase: JobPhase; status: BackgroundJobStatus; error?: string | null }>>({});
+  const [backgroundJobs, setBackgroundJobs] = useState<Record<string, { jobId: string; phase: JobPhase; status: BackgroundJobStatus; error?: string | null }>>({});
   const contentRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -189,6 +189,25 @@ const AiTab = ({
     abortRef.current?.abort("user-stop");
     setIsGenerating(false);
   }, []);
+
+  const handleCancelBackground = useCallback(async (msgId: string) => {
+    const entry = backgroundJobs[msgId];
+    if (!entry?.jobId) return;
+    setBackgroundJobs(prev => {
+      const next = { ...prev };
+      delete next[msgId];
+      return next;
+    });
+    const { error } = await supabase
+      .from("generation_jobs")
+      .update({ status: "aborted", error: "cancelled by user", claimed_at: null })
+      .eq("id", entry.jobId);
+    if (error) {
+      toast.error("Failed to cancel generation");
+      return;
+    }
+    toast("Background generation cancelled.", { duration: 2500 });
+  }, [backgroundJobs]);
 
   const handleCopy = useCallback((content: string) => {
     navigator.clipboard.writeText(content).then(() => {
@@ -648,7 +667,7 @@ const AiTab = ({
       }
       setBackgroundJobs(prev => ({
         ...prev,
-        [assistantMsg.id]: { phase: "starting", status: "running", error: null },
+        [assistantMsg.id]: { jobId, phase: "starting", status: "running", error: null },
       }));
 
       if (resumeJob) {
@@ -713,7 +732,7 @@ const AiTab = ({
         if (job.message_id) {
           setBackgroundJobs(prev => ({
             ...prev,
-            [job.message_id!]: { phase: job.phase, status: job.status, error: job.error },
+            [job.message_id!]: { jobId: job.id, phase: job.phase, status: job.status, error: job.error },
           }));
         }
         if (job.message_id && (job.working_text || "").trim()) {
@@ -759,7 +778,7 @@ const AiTab = ({
               if (row.status === "done" || row.status === "aborted") {
                 delete next[msgId];
               } else {
-                next[msgId] = { phase: row.phase, status: row.status, error: row.error };
+                next[msgId] = { jobId: row.id, phase: row.phase, status: row.status, error: row.error };
               }
               return next;
             });
@@ -1172,9 +1191,17 @@ const AiTab = ({
                 {msg.content ? (
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
                 ) : backgroundJobs[msg.id]?.status === "running" ? (
-                  <div className="flex items-center gap-2 text-muted-foreground not-prose">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                  <div className="flex items-center gap-3 text-muted-foreground not-prose flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-sm">{backgroundPhaseLabel(backgroundJobs[msg.id]?.phase)}</span>
+                    </div>
+                    <button
+                      onClick={() => handleCancelBackground(msg.id)}
+                      className="text-xs px-2.5 py-1 rounded-md border border-border hover:bg-muted text-foreground"
+                    >
+                      Cancel
+                    </button>
                   </div>
                 ) : isGenerating && generatingMsgIdRef.current === msg.id ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
