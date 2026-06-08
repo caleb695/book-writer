@@ -648,7 +648,7 @@ const AiTab = ({
       }
       setBackgroundJobs(prev => ({
         ...prev,
-        [assistantMsg.id]: { phase: "starting", status: "running", error: null },
+        [assistantMsg.id]: { jobId, phase: "starting", status: "running", error: null },
       }));
 
       if (resumeJob) {
