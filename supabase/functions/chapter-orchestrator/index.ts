@@ -37,6 +37,7 @@ const KAGGLE_RESULT_URL = `${FN_BASE}/kaggle-result`;
 const MAX_POLISH_ROUNDS = 3;
 const CLAIM_TTL_MS = 90_000; // a claim older than this is considered abandoned
 const KAGGLE_POLL_INTERVAL_MS = 15_000;
+const KAGGLE_SUBMIT_RETRY_MS = 30_000;
 
 type Phase =
   | "starting"
@@ -252,7 +253,19 @@ async function runPhase(job: Job): Promise<void> {
       const resp = await callOther(KAGGLE_SUBMIT_URL, draftPayload);
       const data = await resp.json().catch(() => null);
       if (!resp.ok || !data?.kernelSlug || !data?.userName) {
-        return failJob(job.id, `kaggle-submit failed: ${data?.error || resp.status}`);
+        const err = String(data?.error || resp.status);
+        const retryable = resp.status === 429 || resp.status >= 500 || data?.conflict === true || /gpu session count|maximum batch gpu|rate limit|quota|temporar/i.test(err);
+        if (retryable) {
+          console.warn(`[orchestrator] job ${job.id} kaggle-submit retryable failure: ${err}`);
+          await patchJob(job.id, {
+            phase: "kaggle-submitting",
+            claimed_at: null,
+            error: `Waiting for Kaggle GPU slot: ${err}`,
+          } as any);
+          fireAndForgetSelf(job.id, KAGGLE_SUBMIT_RETRY_MS);
+          return;
+        }
+        return failJob(job.id, `kaggle-submit failed: ${err}`);
       }
       await patchJob(job.id, {
         phase: "kaggle-polling",
@@ -475,6 +488,7 @@ async function runPhase(job: Job): Promise<void> {
 async function runWatchdog(): Promise<{ kicked: number }> {
   const claimCutoff = new Date(Date.now() - CLAIM_TTL_MS).toISOString();
   const pollCutoff = new Date(Date.now() - (KAGGLE_POLL_INTERVAL_MS + 10_000)).toISOString();
+  const submitCutoff = new Date(Date.now() - KAGGLE_SUBMIT_RETRY_MS).toISOString();
   const ids = new Set<string>();
 
   const { data: stalled, error: e1 } = await admin
@@ -490,6 +504,17 @@ async function runWatchdog(): Promise<{ kicked: number }> {
     .limit(20);
   if (e1) console.warn("watchdog stalled query failed", e1);
   for (const j of stalled || []) ids.add((j as any).id);
+
+  const { data: submitting, error: eSubmit } = await admin
+    .from("generation_jobs")
+    .select("id")
+    .eq("status", "running")
+    .eq("phase", "kaggle-submitting")
+    .or(`claimed_at.is.null,claimed_at.lt.${claimCutoff}`)
+    .lt("updated_at", submitCutoff)
+    .limit(20);
+  if (eSubmit) console.warn("watchdog submit query failed", eSubmit);
+  for (const j of submitting || []) ids.add((j as any).id);
 
   const { data: polling, error: e2 } = await admin
     .from("generation_jobs")
