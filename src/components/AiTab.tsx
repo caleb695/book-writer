@@ -222,6 +222,56 @@ const AiTab = ({
     return text.trim().split(/\s+/).filter(w => w.length > 0).length;
   }, []);
 
+  const kickOrchestrator = useCallback((jobId: string) => {
+    fetch(ORCHESTRATOR_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({ job_id: jobId }),
+      keepalive: true,
+    }).catch(() => { /* watchdog will pick it up */ });
+  }, []);
+
+  const syncBackgroundJobs = useCallback(async () => {
+    if (!projectId || !userId) return;
+    const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    const { data, error } = await supabase
+      .from("generation_jobs")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .gte("updated_at", since)
+      .order("updated_at", { ascending: false })
+      .limit(10);
+    if (error) {
+      console.warn("background job sync failed", error);
+      return;
+    }
+
+    const rows = (data || []) as GenerationJob[];
+    setBackgroundJobs(prev => {
+      const next = { ...prev };
+      for (const row of rows) {
+        if (!row.message_id) continue;
+        if (row.status === "running") {
+          next[row.message_id] = { jobId: row.id, phase: row.phase, status: row.status, error: row.error };
+        } else {
+          delete next[row.message_id];
+        }
+      }
+      return next;
+    });
+
+    for (const row of rows) {
+      if (row.message_id && (row.working_text || "").trim()) {
+        setMessages(prev => prev.map(m => m.id === row.message_id ? { ...m, content: row.working_text } : m));
+      }
+      if (row.status === "running") kickOrchestrator(row.id);
+    }
+  }, [projectId, userId, setMessages, kickOrchestrator]);
+
   // Read a streamed response into a string (hidden from UI)
   const readStreamToString = useCallback(async (resp: Response, signal?: AbortSignal): Promise<string> => {
     const reader = resp.body!.getReader();
@@ -679,15 +729,7 @@ const AiTab = ({
       }
 
       // Kick the orchestrator (fire-and-forget; watchdog will retry).
-      fetch(ORCHESTRATOR_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-        },
-        body: JSON.stringify({ job_id: jobId }),
-        keepalive: true,
-      }).catch(() => { /* watchdog will pick it up */ });
+      kickOrchestrator(jobId);
 
       // From here the server owns the job. Realtime sync mirrors working_text
       // into the assistant message, and the final "done" toast is fired in
@@ -713,7 +755,7 @@ const AiTab = ({
       generatingMsgIdRef.current = null;
       jobIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages]);
+  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages, kickOrchestrator]);
 
   // Mount-only reattach. The server orchestrator + pg_cron watchdog drive the
   // job to completion; the client only needs to (a) reap clearly-dead jobs and
@@ -738,21 +780,28 @@ const AiTab = ({
         if (job.message_id && (job.working_text || "").trim()) {
           setMessages(prev => prev.map(m => m.id === job.message_id ? { ...m, content: job.working_text } : m));
         }
-        fetch(ORCHESTRATOR_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({ job_id: job.id }),
-          keepalive: true,
-        }).catch(() => { /* watchdog will pick it up */ });
+        kickOrchestrator(job.id);
       } catch (e) {
         console.warn("resume check failed", e);
       }
     })();
     return () => { cancelled = true; };
-  }, [projectId, userId, setMessages]);
+  }, [projectId, userId, setMessages, kickOrchestrator]);
+
+  useEffect(() => {
+    if (!projectId || !userId) return;
+    const handleResume = () => {
+      if (document.visibilityState === "visible") syncBackgroundJobs();
+    };
+    window.addEventListener("focus", syncBackgroundJobs);
+    window.addEventListener("online", syncBackgroundJobs);
+    document.addEventListener("visibilitychange", handleResume);
+    return () => {
+      window.removeEventListener("focus", syncBackgroundJobs);
+      window.removeEventListener("online", syncBackgroundJobs);
+      document.removeEventListener("visibilitychange", handleResume);
+    };
+  }, [projectId, userId, syncBackgroundJobs]);
 
 
   // --- Realtime subscription on generation_jobs ---
