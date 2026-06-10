@@ -175,7 +175,9 @@ import json, os, sys, shutil, glob, traceback, subprocess, re
 # to a fresh HF download. The downloaded GGUF is written to /kaggle/working
 # so the NEXT version picks it up via /kaggle/input automatically.
 WORK_DIR = '/kaggle/working/models'
+PKG_CACHE = '/kaggle/working/pkgcache'   # persisted site-packages (mounted read-only next run via /kaggle/input/<slug>/pkgcache)
 os.makedirs(WORK_DIR, exist_ok=True)
+os.makedirs(PKG_CACHE, exist_ok=True)
 PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
@@ -191,24 +193,40 @@ def locate_cached():
                 return p
     return None
 
+def locate_pkgcache():
+    # Prior run's pkgcache is mounted read-only at /kaggle/input/<slug>/pkgcache.
+    for base in [f'/kaggle/input/{SLUG}/pkgcache', f'/kaggle/input/{SLUG}']:
+        if os.path.isdir(base) and glob.glob(f'{base}/**/llama_cpp/__init__.py', recursive=True):
+            # Find the actual site-packages root (parent of llama_cpp dir)
+            hits = glob.glob(f'{base}/**/llama_cpp', recursive=True)
+            if hits:
+                return os.path.dirname(hits[0])
+    return None
+
 def wc(s):
     return len(re.findall(r"\\S+", s or ""))
 
+# Prefer the persisted package cache from the previous kernel version.
+_pkg = locate_pkgcache()
+if _pkg and _pkg not in sys.path:
+    sys.path.insert(0, _pkg)
+    print('LOOMINK_PKGCACHE_HIT', _pkg)
+
 try:
     from llama_cpp import Llama
-    # Sanity check: pre-built wheel exposes CUDA. If not, force reinstall from the CUDA wheel index.
-    import llama_cpp as _lc
-    if not getattr(_lc, 'GGML_USE_CUBLAS', False) and not os.environ.get('LOOMINK_LLAMA_OK'):
-        raise ImportError('non-cuda llama_cpp')
+    print('LOOMINK_LLAMA_OK')
 except Exception:
-    # Install the official prebuilt CUDA 12.1 wheel — avoids a 3-6 min source compile.
+    # Install the official prebuilt CUDA 12.1 wheel into the persisted PKG_CACHE
+    # so the next kernel version picks it up via /kaggle/input mount (zero install time).
     print('LOOMINK_INSTALL_LLAMA_CPP_CUDA')
     subprocess.check_call([
         sys.executable, '-m', 'pip', 'install', '-q', '--upgrade',
+        '--target', PKG_CACHE,
         '--extra-index-url', 'https://abetlen.github.io/llama-cpp-python/whl/cu121',
-        'llama-cpp-python',
+        'llama-cpp-python', 'huggingface_hub',
     ])
-    os.environ['LOOMINK_LLAMA_OK'] = '1'
+    if PKG_CACHE not in sys.path:
+        sys.path.insert(0, PKG_CACHE)
     from llama_cpp import Llama
 
 try:
