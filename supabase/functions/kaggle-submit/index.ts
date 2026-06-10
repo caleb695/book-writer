@@ -456,6 +456,29 @@ serve(async (req) => {
       if (!/kernel|source|not found|does not exist|no output/i.test(msg)) break;
     }
 
+    if (!last || !last.resp.ok || last.parsed?.hasError) {
+      const errMsg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
+      const conflict = last?.resp.status === 409 || /already in use|in use/i.test(errMsg);
+      if (conflict) {
+        const checkSlug = async (candidate: string) => {
+          try {
+            const r = await fetch(
+              `${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(KAGGLE_USERNAME)}&kernelSlug=${encodeURIComponent(candidate)}`,
+              { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
+            );
+            if (!r.ok) return null;
+            const st = await r.json();
+            const state = String(st?.status || "");
+            return (state === "running" || state === "queued") ? state : null;
+          } catch { return null; }
+        };
+
+        const candidates: string[] = [];
+        const hint = typeof body.knownKernelSlug === "string" ? body.knownKernelSlug.trim() : "";
+        if (hint) candidates.push(hint);
+        if (!candidates.includes(slug)) candidates.push(slug);
+
+        for (const term of buildSlugSearchTerms(modelId, slug)) {
           try {
             const listResp = await fetch(
               `${KAGGLE_BASE}/kernels/list?user=${encodeURIComponent(KAGGLE_USERNAME)}&search=${encodeURIComponent(term)}&pageSize=30&sortBy=dateRun`,
@@ -465,7 +488,7 @@ serve(async (req) => {
             const arr = await listResp.json();
             if (Array.isArray(arr)) {
               for (const k of arr) {
-                const ref = String(k?.ref || ""); // "user/slug"
+                const ref = String(k?.ref || "");
                 const s = ref.split("/").pop();
                 if (s && !candidates.includes(s)) candidates.push(s);
               }
@@ -492,6 +515,7 @@ serve(async (req) => {
         conflict,
       }, 502);
     }
+
 
     // Kaggle derives the actual notebook slug from the title (the slug field
     // in the payload is largely ignored). Extract the real slug from the URL
