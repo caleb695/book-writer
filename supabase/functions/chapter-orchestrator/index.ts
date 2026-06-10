@@ -36,7 +36,7 @@ const KAGGLE_RESULT_URL = `${FN_BASE}/kaggle-result`;
 
 const MAX_POLISH_ROUNDS = 3;
 const CLAIM_TTL_MS = 90_000; // a claim older than this is considered abandoned
-const KAGGLE_POLL_INTERVAL_MS = 15_000;
+const KAGGLE_POLL_INTERVAL_MS = 8_000;
 const KAGGLE_SUBMIT_RETRY_MS = 30_000;
 
 type Phase =

@@ -196,8 +196,19 @@ def wc(s):
 
 try:
     from llama_cpp import Llama
+    # Sanity check: pre-built wheel exposes CUDA. If not, force reinstall from the CUDA wheel index.
+    import llama_cpp as _lc
+    if not getattr(_lc, 'GGML_USE_CUBLAS', False) and not os.environ.get('LOOMINK_LLAMA_OK'):
+        raise ImportError('non-cuda llama_cpp')
 except Exception:
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'llama-cpp-python'])
+    # Install the official prebuilt CUDA 12.1 wheel — avoids a 3-6 min source compile.
+    print('LOOMINK_INSTALL_LLAMA_CPP_CUDA')
+    subprocess.check_call([
+        sys.executable, '-m', 'pip', 'install', '-q', '--upgrade',
+        '--extra-index-url', 'https://abetlen.github.io/llama-cpp-python/whl/cu121',
+        'llama-cpp-python',
+    ])
+    os.environ['LOOMINK_LLAMA_OK'] = '1'
     from llama_cpp import Llama
 
 try:
