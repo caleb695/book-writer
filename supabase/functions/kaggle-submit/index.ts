@@ -399,34 +399,38 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
-    const buildPayload = (includeSelfKernel: boolean) => ({
-      // Kaggle's push API expects `slug` in full `username/kernel-slug`
-      // format. Passing only the trailing slug triggers
-      // "Invalid slug: '<slug>'" on some models. Its `id` field, meanwhile,
-      // is numeric in this endpoint, so we must omit it.
-      slug: `${KAGGLE_USERNAME}/${slug}`,
-      text: nbSource,
-      language: "python",
-      kernelType: "notebook",
-      isPrivate: true,
-      enableGpu: true,
-      enableInternet: true,
-      datasetDataSources: [],
-      competitionDataSources: [],
-      // Mount the kernel's own previous version as input so the cached GGUF
-      // at /kaggle/working/models is available at /kaggle/input/<slug>/...
-      kernelDataSources: includeSelfKernel ? [`${KAGGLE_USERNAME}/${slug}`] : [],
-      modelDataSources: [],
-      categoryIds: [],
-      machineShape: "NvidiaTeslaT4",
-      sessionTimeoutSeconds: 3600,
-    });
+    const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId];
+    const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
 
-    const pushOnce = async (includeSelfKernel: boolean) => {
+    const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
+      const sources: string[] = [];
+      if (includeSelfKernel) sources.push(`${KAGGLE_USERNAME}/${slug}`);
+      if (includeDownloadKernel && downloadKernelRef && !sources.includes(downloadKernelRef)) {
+        sources.push(downloadKernelRef);
+      }
+      return {
+        slug: `${KAGGLE_USERNAME}/${slug}`,
+        text: nbSource,
+        language: "python",
+        kernelType: "notebook",
+        isPrivate: true,
+        enableGpu: true,
+        enableInternet: true,
+        datasetDataSources: [],
+        competitionDataSources: [],
+        kernelDataSources: sources,
+        modelDataSources: [],
+        categoryIds: [],
+        machineShape: "NvidiaTeslaT4",
+        sessionTimeoutSeconds: 3600,
+      };
+    };
+
+    const pushOnce = async (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(includeSelfKernel)),
+        body: JSON.stringify(buildPayload(includeSelfKernel, includeDownloadKernel)),
       });
       const text = await resp.text();
       let parsed: any = {};
@@ -435,48 +439,23 @@ serve(async (req) => {
     };
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    // Try with self-kernel as datasource (cache mount). If Kaggle rejects it
-    // because the kernel doesn't exist yet (first run) or has no output yet,
-    // retry without it.
-    for (const includeSelf of [true, false]) {
-      last = await pushOnce(includeSelf);
+    // Try (self + download), then (download only), then (self only), then bare.
+    // The download notebook is the big win — it gives instant access to the
+    // pre-downloaded GGUF, skipping the 5–25 min HF fetch on cold runs.
+    const attempts: Array<[boolean, boolean]> = [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ];
+    for (const [includeSelf, includeDownload] of attempts) {
+      last = await pushOnce(includeSelf, includeDownload);
       if (last && last.resp.ok && !last.parsed?.hasError) break;
-      // Detect missing-kernel-source error to retry without self-mount
       const msg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
-      if (!/kernel|source|not found|does not exist/i.test(msg)) break;
+      // Only retry stripping sources if the error is about the data source.
+      if (!/kernel|source|not found|does not exist|no output/i.test(msg)) break;
     }
 
-    if (!last || !last.resp.ok || last.parsed?.hasError) {
-      // If Kaggle says the kernel is already in use, find the actually-running
-      // kernel and reconnect. Kaggle derives the real slug from the title, so
-      // our `slug` variable may not match. We check three sources in order:
-      //   1) a client-supplied hint (knownKernelSlug from the previous submit)
-      //   2) direct status check on our stable slug
-      //   3) list kernels matching the loomink-<modelId> prefix
-      const errMsg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
-      const conflict = last?.resp.status === 409 || /already in use|in use/i.test(errMsg);
-      if (conflict) {
-        const checkSlug = async (candidate: string) => {
-          try {
-            const r = await fetch(
-              `${KAGGLE_BASE}/kernels/status?userName=${encodeURIComponent(KAGGLE_USERNAME)}&kernelSlug=${encodeURIComponent(candidate)}`,
-              { headers: { Authorization: `Bearer ${KAGGLE_KEY}` } },
-            );
-            if (!r.ok) return null;
-            const st = await r.json();
-            const state = String(st?.status || "");
-            return (state === "running" || state === "queued") ? state : null;
-          } catch { return null; }
-        };
-
-        const candidates: string[] = [];
-        const hint = typeof body.knownKernelSlug === "string" ? body.knownKernelSlug.trim() : "";
-        if (hint) candidates.push(hint);
-        if (!candidates.includes(slug)) candidates.push(slug);
-
-        // Search Kaggle for kernels with the same prefix, including truncated
-        // prefixes for long model ids whose real kernel slug was shortened.
-        for (const term of buildSlugSearchTerms(modelId, slug)) {
           try {
             const listResp = await fetch(
               `${KAGGLE_BASE}/kernels/list?user=${encodeURIComponent(KAGGLE_USERNAME)}&search=${encodeURIComponent(term)}&pageSize=30&sortBy=dateRun`,
