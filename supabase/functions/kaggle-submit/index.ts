@@ -37,6 +37,35 @@ const MODEL_RUNTIME: Record<string, { repo: string; filename: string }> = {
   "davidau-llama-3-2-8x3b-moe-dark-champion": { repo: "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF", filename: "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q5_k_s.gguf" },
 };
 
+// Pre-existing download notebooks owned by `mynameishiiii` whose /kaggle/working
+// output already contains the GGUF for each model. Attaching one as a
+// kernelDataSource mounts it read-only at /kaggle/input/<slug>/, so the runner
+// finds the file instantly and skips the HuggingFace download entirely.
+const DOWNLOAD_KERNEL_USER = "mynameishiiii";
+const DOWNLOAD_KERNEL_SLUGS: Record<string, string> = {
+  "sophosympatheia-magistry-24b-v1-1": "sophosympatheia-magistry-24b-v1-1",
+  "thedrummer-cydonia-24b-v4-3": "thedrummer-cydonia-24b-v4-3",
+  "pygmalionai-pygmalion-3-12b": "pygmalionai-pygmalion-3-12b",
+  "mradermacher-gemma3-27b-it-vl-glm-4-7": "mradermacher-gemma3-27b-it-vl-glm-4-7",
+  "mradermacher-qwen3-4b-fiction-on-fire-series-7": "mradermacher-qwen3-4b-fiction-on-fire-series-7",
+  "thedrummer-rocinante-x-12b-v1": "thedrummer-rocinante-x-12b-v1",
+  "mradermacher-l3-2-rogue-creative-instruct": "mradermacher-l3-2-rogue-creative-instruct",
+  "mradermacher-mars-27b-v-1": "mradermacher-mars-27b-v-1",
+  "mradermacher-broken-tutu-24b-i1-gguf": "mradermacher-broken-tutu-24b-i1-gguf",
+  "mradermacher-synthia-s1-27b": "mradermacher-synthia-s1-27b",
+  "mradermacher-gemma4-garnetv2-31b": "mradermacher-gemma4-garnetv2-31b",
+  "mradermacher-mag-mell-r1-21b": "mradermacher-mag-mell-r1-21b",
+  "thedrummer-fallen-gemma3-27b-v1-gguf": "thedrummer-fallen-gemma3-27b-v1-gguf",
+  "thedrummer-big-tiger-gemma-27b-v3": "thedrummer-big-tiger-gemma-27b-v3",
+  "thedrummer-magidonia-24b-v4-3": "thedrummer-magidonia-24b-v4-3",
+  "mradermacher-mistralsmallcreative": "mradermacher-mistralsmallcreative",
+  "mradermacher-gemma-the-writer-n-restless-quill-v2": "mradermacher-gemma-the-writer-n-restless-quill-v2",
+  "thedrummer-skyfall-31b-v4-2": "thedrummer-skyfall-31b-v4-2",
+  "fallenmerick-mn-violet-lotus-12b": "fallenmerick-mn-violet-lotus-12b",
+  "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus",
+  "davidau-llama-3-2-8x3b-moe-dark-champion": "davidau-llama-3-2-8x3b-moe-dark-champion-instruct",
+};
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
