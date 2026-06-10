@@ -37,6 +37,35 @@ const MODEL_RUNTIME: Record<string, { repo: string; filename: string }> = {
   "davidau-llama-3-2-8x3b-moe-dark-champion": { repo: "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF", filename: "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q5_k_s.gguf" },
 };
 
+// Pre-existing download notebooks owned by `mynameishiiii` whose /kaggle/working
+// output already contains the GGUF for each model. Attaching one as a
+// kernelDataSource mounts it read-only at /kaggle/input/<slug>/, so the runner
+// finds the file instantly and skips the HuggingFace download entirely.
+const DOWNLOAD_KERNEL_USER = "mynameishiiii";
+const DOWNLOAD_KERNEL_SLUGS: Record<string, string> = {
+  "sophosympatheia-magistry-24b-v1-1": "sophosympatheia-magistry-24b-v1-1",
+  "thedrummer-cydonia-24b-v4-3": "thedrummer-cydonia-24b-v4-3",
+  "pygmalionai-pygmalion-3-12b": "pygmalionai-pygmalion-3-12b",
+  "mradermacher-gemma3-27b-it-vl-glm-4-7": "mradermacher-gemma3-27b-it-vl-glm-4-7",
+  "mradermacher-qwen3-4b-fiction-on-fire-series-7": "mradermacher-qwen3-4b-fiction-on-fire-series-7",
+  "thedrummer-rocinante-x-12b-v1": "thedrummer-rocinante-x-12b-v1",
+  "mradermacher-l3-2-rogue-creative-instruct": "mradermacher-l3-2-rogue-creative-instruct",
+  "mradermacher-mars-27b-v-1": "mradermacher-mars-27b-v-1",
+  "mradermacher-broken-tutu-24b-i1-gguf": "mradermacher-broken-tutu-24b-i1-gguf",
+  "mradermacher-synthia-s1-27b": "mradermacher-synthia-s1-27b",
+  "mradermacher-gemma4-garnetv2-31b": "mradermacher-gemma4-garnetv2-31b",
+  "mradermacher-mag-mell-r1-21b": "mradermacher-mag-mell-r1-21b",
+  "thedrummer-fallen-gemma3-27b-v1-gguf": "thedrummer-fallen-gemma3-27b-v1-gguf",
+  "thedrummer-big-tiger-gemma-27b-v3": "thedrummer-big-tiger-gemma-27b-v3",
+  "thedrummer-magidonia-24b-v4-3": "thedrummer-magidonia-24b-v4-3",
+  "mradermacher-mistralsmallcreative": "mradermacher-mistralsmallcreative",
+  "mradermacher-gemma-the-writer-n-restless-quill-v2": "mradermacher-gemma-the-writer-n-restless-quill-v2",
+  "thedrummer-skyfall-31b-v4-2": "thedrummer-skyfall-31b-v4-2",
+  "fallenmerick-mn-violet-lotus-12b": "fallenmerick-mn-violet-lotus-12b",
+  "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus",
+  "davidau-llama-3-2-8x3b-moe-dark-champion": "davidau-llama-3-2-8x3b-moe-dark-champion-instruct",
+};
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
@@ -370,34 +399,38 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax);
 
-    const buildPayload = (includeSelfKernel: boolean) => ({
-      // Kaggle's push API expects `slug` in full `username/kernel-slug`
-      // format. Passing only the trailing slug triggers
-      // "Invalid slug: '<slug>'" on some models. Its `id` field, meanwhile,
-      // is numeric in this endpoint, so we must omit it.
-      slug: `${KAGGLE_USERNAME}/${slug}`,
-      text: nbSource,
-      language: "python",
-      kernelType: "notebook",
-      isPrivate: true,
-      enableGpu: true,
-      enableInternet: true,
-      datasetDataSources: [],
-      competitionDataSources: [],
-      // Mount the kernel's own previous version as input so the cached GGUF
-      // at /kaggle/working/models is available at /kaggle/input/<slug>/...
-      kernelDataSources: includeSelfKernel ? [`${KAGGLE_USERNAME}/${slug}`] : [],
-      modelDataSources: [],
-      categoryIds: [],
-      machineShape: "NvidiaTeslaT4",
-      sessionTimeoutSeconds: 3600,
-    });
+    const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId];
+    const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
 
-    const pushOnce = async (includeSelfKernel: boolean) => {
+    const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
+      const sources: string[] = [];
+      if (includeSelfKernel) sources.push(`${KAGGLE_USERNAME}/${slug}`);
+      if (includeDownloadKernel && downloadKernelRef && !sources.includes(downloadKernelRef)) {
+        sources.push(downloadKernelRef);
+      }
+      return {
+        slug: `${KAGGLE_USERNAME}/${slug}`,
+        text: nbSource,
+        language: "python",
+        kernelType: "notebook",
+        isPrivate: true,
+        enableGpu: true,
+        enableInternet: true,
+        datasetDataSources: [],
+        competitionDataSources: [],
+        kernelDataSources: sources,
+        modelDataSources: [],
+        categoryIds: [],
+        machineShape: "NvidiaTeslaT4",
+        sessionTimeoutSeconds: 3600,
+      };
+    };
+
+    const pushOnce = async (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const resp = await fetch(`${KAGGLE_BASE}/kernels/push`, {
         method: "POST",
         headers: { Authorization: `Bearer ${KAGGLE_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload(includeSelfKernel)),
+        body: JSON.stringify(buildPayload(includeSelfKernel, includeDownloadKernel)),
       });
       const text = await resp.text();
       let parsed: any = {};
@@ -406,24 +439,24 @@ serve(async (req) => {
     };
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    // Try with self-kernel as datasource (cache mount). If Kaggle rejects it
-    // because the kernel doesn't exist yet (first run) or has no output yet,
-    // retry without it.
-    for (const includeSelf of [true, false]) {
-      last = await pushOnce(includeSelf);
+    // Try (self + download), then (download only), then (self only), then bare.
+    // The download notebook is the big win — it gives instant access to the
+    // pre-downloaded GGUF, skipping the 5–25 min HF fetch on cold runs.
+    const attempts: Array<[boolean, boolean]> = [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ];
+    for (const [includeSelf, includeDownload] of attempts) {
+      last = await pushOnce(includeSelf, includeDownload);
       if (last && last.resp.ok && !last.parsed?.hasError) break;
-      // Detect missing-kernel-source error to retry without self-mount
       const msg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
-      if (!/kernel|source|not found|does not exist/i.test(msg)) break;
+      // Only retry stripping sources if the error is about the data source.
+      if (!/kernel|source|not found|does not exist|no output/i.test(msg)) break;
     }
 
     if (!last || !last.resp.ok || last.parsed?.hasError) {
-      // If Kaggle says the kernel is already in use, find the actually-running
-      // kernel and reconnect. Kaggle derives the real slug from the title, so
-      // our `slug` variable may not match. We check three sources in order:
-      //   1) a client-supplied hint (knownKernelSlug from the previous submit)
-      //   2) direct status check on our stable slug
-      //   3) list kernels matching the loomink-<modelId> prefix
       const errMsg = String(last?.parsed?.message || last?.parsed?.error || last?.text || "");
       const conflict = last?.resp.status === 409 || /already in use|in use/i.test(errMsg);
       if (conflict) {
@@ -445,8 +478,6 @@ serve(async (req) => {
         if (hint) candidates.push(hint);
         if (!candidates.includes(slug)) candidates.push(slug);
 
-        // Search Kaggle for kernels with the same prefix, including truncated
-        // prefixes for long model ids whose real kernel slug was shortened.
         for (const term of buildSlugSearchTerms(modelId, slug)) {
           try {
             const listResp = await fetch(
@@ -457,7 +488,7 @@ serve(async (req) => {
             const arr = await listResp.json();
             if (Array.isArray(arr)) {
               for (const k of arr) {
-                const ref = String(k?.ref || ""); // "user/slug"
+                const ref = String(k?.ref || "");
                 const s = ref.split("/").pop();
                 if (s && !candidates.includes(s)) candidates.push(s);
               }
@@ -484,6 +515,7 @@ serve(async (req) => {
         conflict,
       }, 502);
     }
+
 
     // Kaggle derives the actual notebook slug from the title (the slug field
     // in the payload is largely ignored). Extract the real slug from the URL
