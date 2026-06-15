@@ -43,27 +43,27 @@ const MODEL_RUNTIME: Record<string, { repo: string; filename: string }> = {
 // finds the file instantly and skips the HuggingFace download entirely.
 const DOWNLOAD_KERNEL_USER = "mynameishiiii";
 const DOWNLOAD_KERNEL_SLUGS: Record<string, string> = {
-  "sophosympatheia-magistry-24b-v1-1": "sophosympatheia-magistry-24b-v1-1",
-  "thedrummer-cydonia-24b-v4-3": "thedrummer-cydonia-24b-v4-3",
-  "pygmalionai-pygmalion-3-12b": "pygmalionai-pygmalion-3-12b",
-  "mradermacher-gemma3-27b-it-vl-glm-4-7": "mradermacher-gemma3-27b-it-vl-glm-4-7",
-  "mradermacher-qwen3-4b-fiction-on-fire-series-7": "mradermacher-qwen3-4b-fiction-on-fire-series-7",
-  "thedrummer-rocinante-x-12b-v1": "thedrummer-rocinante-x-12b-v1",
-  "mradermacher-l3-2-rogue-creative-instruct": "mradermacher-l3-2-rogue-creative-instruct",
-  "mradermacher-mars-27b-v-1": "mradermacher-mars-27b-v-1",
-  "mradermacher-broken-tutu-24b-i1-gguf": "mradermacher-broken-tutu-24b-i1-gguf",
-  "mradermacher-synthia-s1-27b": "mradermacher-synthia-s1-27b",
-  "mradermacher-gemma4-garnetv2-31b": "mradermacher-gemma4-garnetv2-31b",
-  "mradermacher-mag-mell-r1-21b": "mradermacher-mag-mell-r1-21b",
-  "thedrummer-fallen-gemma3-27b-v1-gguf": "thedrummer-fallen-gemma3-27b-v1-gguf",
-  "thedrummer-big-tiger-gemma-27b-v3": "thedrummer-big-tiger-gemma-27b-v3",
-  "thedrummer-magidonia-24b-v4-3": "thedrummer-magidonia-24b-v4-3",
-  "mradermacher-mistralsmallcreative": "mradermacher-mistralsmallcreative",
-  "mradermacher-gemma-the-writer-n-restless-quill-v2": "mradermacher-gemma-the-writer-n-restless-quill-v2",
-  "thedrummer-skyfall-31b-v4-2": "thedrummer-skyfall-31b-v4-2",
-  "fallenmerick-mn-violet-lotus-12b": "fallenmerick-mn-violet-lotus-12b",
-  "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus",
-  "davidau-llama-3-2-8x3b-moe-dark-champion": "davidau-llama-3-2-8x3b-moe-dark-champion-instruct",
+  "sophosympatheia-magistry-24b-v1-1": "loomink-dl-sophosympatheia-magistry-24b-v1-1",
+  "thedrummer-cydonia-24b-v4-3": "loomink-dl-thedrummer-cydonia-24b-v4-3",
+  "pygmalionai-pygmalion-3-12b": "loomink-dl-pygmalionai-pygmalion-3-12b",
+  "mradermacher-gemma3-27b-it-vl-glm-4-7": "loomink-dl-mradermacher-gemma3-27b-it-vl-glm-4-7",
+  "mradermacher-qwen3-4b-fiction-on-fire-series-7": "loomink-dl-mradermacher-qwen3-4b-fiction-on-fire-s",
+  "thedrummer-rocinante-x-12b-v1": "loomink-dl-thedrummer-rocinante-x-12b-v1",
+  "mradermacher-l3-2-rogue-creative-instruct": "loomink-dl-mradermacher-l3-2-rogue-creative-instru",
+  "mradermacher-mars-27b-v-1": "loomink-dl-mradermacher-mars-27b-v-1",
+  "mradermacher-broken-tutu-24b-i1-gguf": "loomink-dl-mradermacher-broken-tutu-24b-i1-gguf",
+  "mradermacher-synthia-s1-27b": "loomink-dl-mradermacher-synthia-s1-27b",
+  "mradermacher-gemma4-garnetv2-31b": "loomink-dl-mradermacher-gemma4-garnetv2-31b",
+  "mradermacher-mag-mell-r1-21b": "loomink-dl-mradermacher-mag-mell-r1-21b",
+  "thedrummer-fallen-gemma3-27b-v1-gguf": "loomink-dl-thedrummer-fallen-gemma3-27b-v1-gguf",
+  "thedrummer-big-tiger-gemma-27b-v3": "loomink-dl-thedrummer-big-tiger-gemma-27b-v3",
+  "thedrummer-magidonia-24b-v4-3": "loomink-dl-thedrummer-magidonia-24b-v4-3",
+  "mradermacher-mistralsmallcreative": "loomink-dl-mradermacher-mistralsmallcreative",
+  "mradermacher-gemma-the-writer-n-restless-quill-v2": "loomink-dl-mradermacher-gemma-the-writer-n-restles",
+  "thedrummer-skyfall-31b-v4-2": "loomink-dl-thedrummer-skyfall-31b-v4-2",
+  "fallenmerick-mn-violet-lotus-12b": "loomink-dl-fallenmerick-mn-violet-lotus-12b",
+  "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "loomink-dl-davidau-lfm2-5-1-2b-thinking-claude-4-6",
+  "davidau-llama-3-2-8x3b-moe-dark-champion": "loomink-dl-davidau-llama-3-2-8x3b-moe-dark-champio",
 };
 
 function json(body: unknown, status = 200) {
@@ -287,10 +287,6 @@ try:
     if cached:
         print('LOOMINK_CACHE_HIT', cached, os.path.getsize(cached))
         MODEL_PATH = cached
-        try:
-            if not os.path.exists(WORK_PATH):
-                shutil.copy(cached, WORK_PATH)
-        except Exception: pass
     else:
         try:
             from huggingface_hub import hf_hub_download
@@ -316,67 +312,23 @@ try:
     T = float(PROMPT['temperature'])
     P = float(PROMPT['top_p'])
 
-    # Multi-pass generation: the model sees an updated live word count
-    # between each pass and paces itself toward the target. The same Llama
-    # instance is reused so KV cache is shared — only new tokens are
-    # processed each pass, keeping latency low.
-    SEGMENTS = [
-        ('opening',    0.30, "Open the chapter. Establish scene, viewpoint, immediate stakes. Use vivid sensory detail and at least one strong line of dialogue or interiority."),
-        ('rising',     0.60, "Develop the rising action. Deepen conflict, layer character motivation, advance the outline beats. Heavy on dialogue and concrete action."),
-        ('climax',     0.88, "Build to this chapter's peak. Highest tension, most decisive choice or revelation. No summary — fully dramatize."),
-        ('resolution', 1.00, "Land the chapter. Resolve the immediate beat and plant a clear hook into the next chapter. Do not write 'End of chapter' or any meta text."),
-    ]
-
-    convo = [
-        {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWORD COUNT DISCIPLINE:\\n- Total target: {WORD_MIN}-{WORD_MAX} words.\\n- You will receive a live PROGRESS update before each new section telling you exactly how many words you have written and how many remain.\\n- Pace yourself: do not rush the ending, do not pad the middle."},
-        {'role': 'user', 'content': PROMPT['user'] + f"\\n\\nTARGET: {WORD_MIN}-{WORD_MAX} words for this chapter. I will guide you section-by-section with live word-count updates so you can pace the prose precisely."},
-    ]
-
-    full_chapter = ''
-    for idx, (label, frac, guidance) in enumerate(SEGMENTS):
-        target_at_end = int(WORD_MAX * frac)
-        current = wc(full_chapter)
-        needed = max(80, target_at_end - current)
-        budget_tokens = min(int(PROMPT['max_tokens']), int(needed * 1.9) + 200)
-
-        if idx == 0:
-            convo.append({'role': 'user', 'content': f"FIRST SECTION ({label}): {guidance}\\nWrite approximately {needed} words. Begin the chapter now with the required heading on the very first line."})
-        else:
-            convo.append({'role': 'assistant', 'content': last_response})
-            convo.append({'role': 'user', 'content': f"PROGRESS: {current} / {WORD_MAX} words written ({int(current/WORD_MAX*100)}% of target). Remaining budget: {WORD_MAX - current} words.\\n\\nNEXT SECTION ({label}): {guidance}\\nWrite approximately {needed} more words. Continue seamlessly from your last sentence — do NOT restart, do NOT repeat the chapter heading, do NOT summarize what came before."})
-
-        print(f'LOOMINK_PASS {idx+1}/{len(SEGMENTS)} {label} current={current} target={target_at_end} budget={budget_tokens}')
-        out = llm.create_chat_completion(
-            messages=convo,
-            max_tokens=budget_tokens,
-            temperature=T,
-            top_p=P,
-        )
-        last_response = (out['choices'][0]['message']['content'] or '').strip()
-        if not last_response:
-            print(f'LOOMINK_PASS_EMPTY {label}')
-            continue
-        # Strip a duplicated chapter heading the model sometimes re-emits.
-        if idx > 0:
-            last_response = re.sub(r'^\\s*##\\s*Chapter\\s+\\d+[^\\n]*\\n+', '', last_response, count=1, flags=re.IGNORECASE)
-        full_chapter += ('\\n\\n' if full_chapter else '') + last_response
-        # Pop the most recent user instruction so the next pass slots a fresh
-        # progress update in its place — keeps the conversation lean.
-        convo.pop()
-        print(f'LOOMINK_AFTER_PASS {label} total_words={wc(full_chapter)}')
-
-        # Early exit if we already exceeded max — let the model land cleanly.
-        if wc(full_chapter) >= WORD_MAX and label != 'resolution':
-            print('LOOMINK_AT_MAX skipping_remaining_segments')
-            convo.append({'role': 'assistant', 'content': last_response})
-            convo.append({'role': 'user', 'content': f"PROGRESS: {wc(full_chapter)} / {WORD_MAX} words. You have hit the target. Write ONLY a short final paragraph (60-150 words) that lands this chapter and plants a hook. Do not start new scenes."})
-            out = llm.create_chat_completion(messages=convo, max_tokens=400, temperature=T, top_p=P)
-            tail = (out['choices'][0]['message']['content'] or '').strip()
-            if tail:
-                tail = re.sub(r'^\\s*##\\s*Chapter\\s+\\d+[^\\n]*\\n+', '', tail, count=1, flags=re.IGNORECASE)
-                full_chapter += '\\n\\n' + tail
-            break
-
+    # Single-pass generation is materially faster on Kaggle T4 than the old
+    # section-by-section loop because each extra pass re-evaluates a growing
+    # prompt on a 20GB+ GGUF. Keep the word-count target in the prompt and let
+    # the polish pipeline handle quality/continuity afterward.
+    budget_tokens = min(int(PROMPT['max_tokens']), int(WORD_MAX * 1.75) + 256)
+    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX}')
+    out = llm.create_chat_completion(
+        messages=[
+            {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary."},
+            {'role': 'user', 'content': PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}."},
+        ],
+        max_tokens=budget_tokens,
+        temperature=T,
+        top_p=P,
+    )
+    full_chapter = (out['choices'][0]['message']['content'] or '').strip()
+    full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter)
     final_count = wc(full_chapter)
     with open('/kaggle/working/loomink_output.json', 'w') as f:
         json.dump({'ok': True, 'content': full_chapter, 'word_count': final_count, 'target': [WORD_MIN, WORD_MAX]}, f)
@@ -411,12 +363,13 @@ serve(async (req) => {
     const { system, user } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
-    const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || 4096));
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.7));
     const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
+    const defaultMaxTokens = Math.min(8192, Math.max(1024, Math.ceil(wordMax * 1.75) + 256));
+    const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || defaultMaxTokens));
 
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
@@ -462,12 +415,14 @@ serve(async (req) => {
     };
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    // Try (self + download), then (download only), then (self only), then bare.
-    // The download notebook is the big win — it gives instant access to the
-    // pre-downloaded GGUF, skipping the 5–25 min HF fetch on cold runs.
+    // Try the small dedicated download notebook first. Attaching this runner's
+    // own previous output can include a copied 20GB+ model plus thousands of
+    // package-cache files, which makes Kaggle spend minutes mounting inputs
+    // before our code even starts. Only fall back to self-attachment if Kaggle
+    // rejects the dedicated download source.
     const attempts: Array<[boolean, boolean]> = [
-      [true, true],
       [false, true],
+      [true, true],
       [true, false],
       [false, false],
     ];
