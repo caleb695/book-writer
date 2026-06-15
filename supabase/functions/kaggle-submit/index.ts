@@ -195,38 +195,62 @@ Rules:
   return { system, user };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
   const code = `
 import json, os, sys, shutil, glob, traceback, subprocess, re
-# Kaggle wipes /kaggle/working between kernel versions, but a kernel's own
-# previous output is mounted read-only at /kaggle/input/<slug>/ when we add
-# the kernel itself as a kernelDataSource. Check there first, then fall back
-# to a fresh HF download. The downloaded GGUF is written to /kaggle/working
-# so the NEXT version picks it up via /kaggle/input automatically.
 WORK_DIR = '/kaggle/working/models'
-PKG_CACHE = '/kaggle/working/pkgcache'   # persisted site-packages (mounted read-only next run via /kaggle/input/<slug>/pkgcache)
+PKG_CACHE = '/kaggle/working/pkgcache'
 os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(PKG_CACHE, exist_ok=True)
 PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
 SLUG = ${JSON.stringify(slug)}
+DOWNLOAD_SLUG = ${JSON.stringify(downloadSlug || "")}
 WORK_PATH = os.path.join(WORK_DIR, FILENAME)
 
+# Debug: enumerate every GGUF mounted under /kaggle/input so we can see
+# exactly what each attached kernel/dataset exposed (filenames vary subtly).
+print('LOOMINK_INPUT_TREE_BEGIN', 'expected=', FILENAME, 'download_slug=', DOWNLOAD_SLUG)
+try:
+    for base in (os.listdir('/kaggle/input') if os.path.isdir('/kaggle/input') else []):
+        full = os.path.join('/kaggle/input', base)
+        for p in glob.glob(f'{full}/**/*.gguf', recursive=True)[:30]:
+            try: sz = os.path.getsize(p)
+            except Exception: sz = -1
+            print('LOOMINK_INPUT_GGUF', p, sz)
+except Exception as e:
+    print('LOOMINK_INPUT_ERR', e)
+print('LOOMINK_INPUT_TREE_END')
+
 def locate_cached():
-    bases = [f'/kaggle/input/{SLUG}', '/kaggle/input']
-    for base in bases:
+    # Pass 1: exact filename match in priority roots.
+    roots = []
+    for s in (SLUG, DOWNLOAD_SLUG):
+        if s: roots.append(f'/kaggle/input/{s}')
+    roots.append('/kaggle/input')
+    for base in roots:
         if not os.path.isdir(base): continue
         for p in glob.glob(f'{base}/**/{FILENAME}', recursive=True):
             if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
+                print('LOOMINK_CACHE_EXACT', p)
                 return p
+    # Pass 2: any large .gguf inside the dedicated download-kernel mount
+    # (handles cases where the download notebook saved under a different name).
+    if DOWNLOAD_SLUG and os.path.isdir(f'/kaggle/input/{DOWNLOAD_SLUG}'):
+        cands = sorted(
+            [p for p in glob.glob(f'/kaggle/input/{DOWNLOAD_SLUG}/**/*.gguf', recursive=True)
+             if os.path.getsize(p) > 100_000_000],
+            key=lambda x: os.path.getsize(x), reverse=True,
+        )
+        if cands:
+            print('LOOMINK_CACHE_FUZZY', cands[0])
+            return cands[0]
     return None
 
 def locate_pkgcache():
-    # Prior run's pkgcache is mounted read-only at /kaggle/input/<slug>/pkgcache.
     for base in [f'/kaggle/input/{SLUG}/pkgcache', f'/kaggle/input/{SLUG}']:
         if os.path.isdir(base) and glob.glob(f'{base}/**/llama_cpp/__init__.py', recursive=True):
-            # Find the actual site-packages root (parent of llama_cpp dir)
             hits = glob.glob(f'{base}/**/llama_cpp', recursive=True)
             if hits:
                 return os.path.dirname(hits[0])
