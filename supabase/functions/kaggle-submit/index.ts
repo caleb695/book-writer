@@ -363,12 +363,13 @@ serve(async (req) => {
     const { system, user } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
-    const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || 4096));
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.7));
     const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
+    const defaultMaxTokens = Math.min(8192, Math.max(1024, Math.ceil(wordMax * 1.75) + 256));
+    const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || defaultMaxTokens));
 
     // Stable per-model slug — re-pushing creates a new version of the SAME
     // kernel, which preserves the cached GGUF in /kaggle/working across runs.
