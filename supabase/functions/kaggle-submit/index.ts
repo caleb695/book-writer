@@ -414,12 +414,14 @@ serve(async (req) => {
     };
 
     let last: { resp: Response; parsed: any; text: string } | null = null;
-    // Try (self + download), then (download only), then (self only), then bare.
-    // The download notebook is the big win — it gives instant access to the
-    // pre-downloaded GGUF, skipping the 5–25 min HF fetch on cold runs.
+    // Try the small dedicated download notebook first. Attaching this runner's
+    // own previous output can include a copied 20GB+ model plus thousands of
+    // package-cache files, which makes Kaggle spend minutes mounting inputs
+    // before our code even starts. Only fall back to self-attachment if Kaggle
+    // rejects the dedicated download source.
     const attempts: Array<[boolean, boolean]> = [
-      [true, true],
       [false, true],
+      [true, true],
       [true, false],
       [false, false],
     ];
