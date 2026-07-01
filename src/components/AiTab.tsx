@@ -93,8 +93,21 @@ const AiTab = ({
   memoryTotalCount = 0, memoryCategoryCounts,
 }: AiTabProps) => {
   const [chapterInput, setChapterInput] = useState(String(aiSettings.chapter_number || 1));
-  const [wordCountMin, setWordCountMin] = useState("3500");
-  const [wordCountMax, setWordCountMax] = useState("4000");
+  const [wordCountMin, setWordCountMin] = useState(String(aiSettings.word_count_min || 3500));
+  const [wordCountMax, setWordCountMax] = useState(String(aiSettings.word_count_max || 4000));
+
+  // Persist word count range whenever the user edits it (debounced by React state batching).
+  useEffect(() => {
+    const min = parseInt(wordCountMin) || 0;
+    const max = parseInt(wordCountMax) || 0;
+    if (!min || !max) return;
+    if (min === aiSettings.word_count_min && max === aiSettings.word_count_max) return;
+    const t = setTimeout(() => {
+      onUpdateAiSettings({ word_count_min: min, word_count_max: max });
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordCountMin, wordCountMax]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [enhancePhase, setEnhancePhase] = useState<"idle" | "drafting" | "enhancing" | "fact-checking" | "correcting" | "checking" | "polishing" | "finalizing">("idle");
   const [phaseIteration, setPhaseIteration] = useState<number>(0);
