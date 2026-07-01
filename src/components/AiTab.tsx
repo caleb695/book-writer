@@ -1156,7 +1156,7 @@ const AiTab = ({
             value={[aiSettings.temperature]}
             onValueChange={([v]) => onUpdateAiSettings({ temperature: Math.round(v * 100) / 100 })}
             min={0}
-            max={1}
+            max={2}
             step={0.01}
             className="w-full"
           />
@@ -1166,15 +1166,15 @@ const AiTab = ({
         </div>
       </div>
 
-      {/* Top P slider */}
+      {/* Min P slider (Kaggle uses natively; other providers ignore or clamp) */}
       <div className="space-y-3">
-        <span className="text-xs text-muted-foreground font-medium">Top P</span>
+        <span className="text-xs text-muted-foreground font-medium">Min P</span>
         <div className="px-1">
           <Slider
             value={[aiSettings.top_p]}
             onValueChange={([v]) => onUpdateAiSettings({ top_p: Math.round(v * 100) / 100 })}
             min={0}
-            max={1}
+            max={2}
             step={0.01}
             className="w-full"
           />
