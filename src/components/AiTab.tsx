@@ -93,8 +93,21 @@ const AiTab = ({
   memoryTotalCount = 0, memoryCategoryCounts,
 }: AiTabProps) => {
   const [chapterInput, setChapterInput] = useState(String(aiSettings.chapter_number || 1));
-  const [wordCountMin, setWordCountMin] = useState("3500");
-  const [wordCountMax, setWordCountMax] = useState("4000");
+  const [wordCountMin, setWordCountMin] = useState(String(aiSettings.word_count_min || 3500));
+  const [wordCountMax, setWordCountMax] = useState(String(aiSettings.word_count_max || 4000));
+
+  // Persist word count range whenever the user edits it (debounced by React state batching).
+  useEffect(() => {
+    const min = parseInt(wordCountMin) || 0;
+    const max = parseInt(wordCountMax) || 0;
+    if (!min || !max) return;
+    if (min === aiSettings.word_count_min && max === aiSettings.word_count_max) return;
+    const t = setTimeout(() => {
+      onUpdateAiSettings({ word_count_min: min, word_count_max: max });
+    }, 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordCountMin, wordCountMax]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [enhancePhase, setEnhancePhase] = useState<"idle" | "drafting" | "enhancing" | "fact-checking" | "correcting" | "checking" | "polishing" | "finalizing">("idle");
   const [phaseIteration, setPhaseIteration] = useState<number>(0);
@@ -665,8 +678,12 @@ const AiTab = ({
         ultraContextInjection: ultraContextInjection || undefined,
         model: activeModel,
         temperature: aiSettings.temperature,
-        top_p: aiSettings.top_p,
-        topP: aiSettings.top_p,
+        // The "top_p" slider is now repurposed as min_p (see UI). Kaggle uses
+        // min_p natively; non-Kaggle providers still receive top_p clamped to
+        // its valid 0-1 range for backward compatibility.
+        minP: aiSettings.top_p,
+        min_p: aiSettings.top_p,
+        top_p: Math.min(1, Math.max(0, aiSettings.top_p)),
         contextWindow: ctx,
       };
 
@@ -1152,7 +1169,7 @@ const AiTab = ({
             value={[aiSettings.temperature]}
             onValueChange={([v]) => onUpdateAiSettings({ temperature: Math.round(v * 100) / 100 })}
             min={0}
-            max={1}
+            max={2}
             step={0.01}
             className="w-full"
           />
@@ -1162,15 +1179,15 @@ const AiTab = ({
         </div>
       </div>
 
-      {/* Top P slider */}
+      {/* Min P slider (Kaggle uses natively; other providers ignore or clamp) */}
       <div className="space-y-3">
-        <span className="text-xs text-muted-foreground font-medium">Top P</span>
+        <span className="text-xs text-muted-foreground font-medium">Min P</span>
         <div className="px-1">
           <Slider
             value={[aiSettings.top_p]}
             onValueChange={([v]) => onUpdateAiSettings({ top_p: Math.round(v * 100) / 100 })}
             min={0}
-            max={1}
+            max={2}
             step={0.01}
             className="w-full"
           />

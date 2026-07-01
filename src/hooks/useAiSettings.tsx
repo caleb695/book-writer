@@ -10,6 +10,9 @@ export interface AiSettings {
   fiction_type: string;
   fiction_type_enabled: boolean;
   perspective: string;
+  word_count_min: number;
+  word_count_max: number;
+  brainstorm_model: string;
 }
 
 const DEFAULTS: AiSettings = {
@@ -20,6 +23,9 @@ const DEFAULTS: AiSettings = {
   fiction_type: "",
   fiction_type_enabled: false,
   perspective: "",
+  word_count_min: 3500,
+  word_count_max: 4000,
+  brainstorm_model: "mistral-large-latest",
 };
 
 export interface ModelEntry {
@@ -202,6 +208,9 @@ export function useAiSettings() {
           fiction_type: data.fiction_type || "",
           fiction_type_enabled: !!data.fiction_type_enabled,
           perspective: data.perspective || "",
+          word_count_min: Number(data.word_count_min) || DEFAULTS.word_count_min,
+          word_count_max: Number(data.word_count_max) || DEFAULTS.word_count_max,
+          brainstorm_model: data.brainstorm_model || DEFAULTS.brainstorm_model,
         });
       }
       setLoading(false);
@@ -226,6 +235,9 @@ export function useAiSettings() {
         fiction_type: next.fiction_type,
         fiction_type_enabled: next.fiction_type_enabled,
         perspective: next.perspective,
+        word_count_min: next.word_count_min,
+        word_count_max: next.word_count_max,
+        brainstorm_model: next.brainstorm_model,
       }, { onConflict: "user_id" });
 
     if (error) console.error("Save AI settings error:", error);

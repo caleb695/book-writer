@@ -570,6 +570,7 @@ export type Database = {
       }
       user_ai_settings: {
         Row: {
+          brainstorm_model: string | null
           chapter_number: number
           created_at: string
           fiction_type: string
@@ -581,8 +582,11 @@ export type Database = {
           top_p: number
           updated_at: string
           user_id: string
+          word_count_max: number | null
+          word_count_min: number | null
         }
         Insert: {
+          brainstorm_model?: string | null
           chapter_number?: number
           created_at?: string
           fiction_type?: string
@@ -594,8 +598,11 @@ export type Database = {
           top_p?: number
           updated_at?: string
           user_id: string
+          word_count_max?: number | null
+          word_count_min?: number | null
         }
         Update: {
+          brainstorm_model?: string | null
           chapter_number?: number
           created_at?: string
           fiction_type?: string
@@ -607,6 +614,8 @@ export type Database = {
           top_p?: number
           updated_at?: string
           user_id?: string
+          word_count_max?: number | null
+          word_count_min?: number | null
         }
         Relationships: []
       }

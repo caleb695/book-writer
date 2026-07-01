@@ -212,14 +212,14 @@ HUMAN VOICE (write like a real novelist, not an AI):
   return { system, user };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
   const code = `
 import json, os, sys, shutil, glob, traceback, subprocess, re
 WORK_DIR = '/kaggle/working/models'
 PKG_CACHE = '/kaggle/working/pkgcache'
 os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(PKG_CACHE, exist_ok=True)
-PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, top_p: topP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
+PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, min_p: minP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
 SLUG = ${JSON.stringify(slug)}
@@ -321,20 +321,22 @@ try:
         n_batch=1024,
         n_ubatch=512,
         flash_attn=True,
+        type_k=8,  # GGML_TYPE_Q8_0 — 8-bit K cache (halves KV RAM)
+        type_v=8,  # GGML_TYPE_Q8_0 — 8-bit V cache (requires flash_attn)
         verbose=False,
     )
 
     WORD_MIN = int(PROMPT['word_min'] or 3500)
     WORD_MAX = int(PROMPT['word_max'] or 4000)
     T = float(PROMPT['temperature'])
-    P = float(PROMPT['top_p'])
+    MP = float(PROMPT['min_p'])
 
     # Single-pass generation is materially faster on Kaggle T4 than the old
     # section-by-section loop because each extra pass re-evaluates a growing
     # prompt on a 20GB+ GGUF. Keep the word-count target in the prompt and let
     # the polish pipeline handle quality/continuity afterward.
     budget_tokens = min(int(PROMPT['max_tokens']), int(WORD_MAX * 1.75) + 256)
-    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX}')
+    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX} temp={T} min_p={MP}')
     out = llm.create_chat_completion(
         messages=[
             {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary."},
@@ -342,7 +344,8 @@ try:
         ],
         max_tokens=budget_tokens,
         temperature=T,
-        top_p=P,
+        top_p=1.0,
+        min_p=MP,
     )
     full_chapter = (out['choices'][0]['message']['content'] or '').strip()
     full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter)
@@ -380,8 +383,8 @@ serve(async (req) => {
     const { system, user } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
-    const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.7));
-    const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
+    const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
+    const minP = Math.max(0, Math.min(2, Number(body.minP ?? body.min_p) ?? 0.05));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
@@ -393,7 +396,7 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId] || null;
     const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
 
     const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const sources: string[] = [];
