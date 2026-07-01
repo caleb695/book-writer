@@ -10,6 +10,9 @@ export interface AiSettings {
   fiction_type: string;
   fiction_type_enabled: boolean;
   perspective: string;
+  word_count_min: number;
+  word_count_max: number;
+  brainstorm_model: string;
 }
 
 const DEFAULTS: AiSettings = {
@@ -20,6 +23,9 @@ const DEFAULTS: AiSettings = {
   fiction_type: "",
   fiction_type_enabled: false,
   perspective: "",
+  word_count_min: 3500,
+  word_count_max: 4000,
+  brainstorm_model: "mistral-large-latest",
 };
 
 export interface ModelEntry {
