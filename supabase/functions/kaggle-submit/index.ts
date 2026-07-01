@@ -321,20 +321,22 @@ try:
         n_batch=1024,
         n_ubatch=512,
         flash_attn=True,
+        type_k=8,  # GGML_TYPE_Q8_0 — 8-bit K cache (halves KV RAM)
+        type_v=8,  # GGML_TYPE_Q8_0 — 8-bit V cache (requires flash_attn)
         verbose=False,
     )
 
     WORD_MIN = int(PROMPT['word_min'] or 3500)
     WORD_MAX = int(PROMPT['word_max'] or 4000)
     T = float(PROMPT['temperature'])
-    P = float(PROMPT['top_p'])
+    MP = float(PROMPT['min_p'])
 
     # Single-pass generation is materially faster on Kaggle T4 than the old
     # section-by-section loop because each extra pass re-evaluates a growing
     # prompt on a 20GB+ GGUF. Keep the word-count target in the prompt and let
     # the polish pipeline handle quality/continuity afterward.
     budget_tokens = min(int(PROMPT['max_tokens']), int(WORD_MAX * 1.75) + 256)
-    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX}')
+    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX} temp={T} min_p={MP}')
     out = llm.create_chat_completion(
         messages=[
             {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary."},
@@ -342,7 +344,8 @@ try:
         ],
         max_tokens=budget_tokens,
         temperature=T,
-        top_p=P,
+        top_p=1.0,
+        min_p=MP,
     )
     full_chapter = (out['choices'][0]['message']['content'] or '').strip()
     full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter)
