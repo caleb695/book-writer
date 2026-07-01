@@ -208,6 +208,9 @@ export function useAiSettings() {
           fiction_type: data.fiction_type || "",
           fiction_type_enabled: !!data.fiction_type_enabled,
           perspective: data.perspective || "",
+          word_count_min: Number(data.word_count_min) || DEFAULTS.word_count_min,
+          word_count_max: Number(data.word_count_max) || DEFAULTS.word_count_max,
+          brainstorm_model: data.brainstorm_model || DEFAULTS.brainstorm_model,
         });
       }
       setLoading(false);
