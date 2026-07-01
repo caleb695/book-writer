@@ -170,7 +170,24 @@ Rules:
 - Use only details from the Chapter ${chapterNumber} outline.
 - Never summarize scenes that should be dramatized.
 - Preserve continuity with all provided manuscript and reference material.
-- Keep names, places, relationships, and canonical facts exact.`;
+- Keep names, places, relationships, and canonical facts exact.
+
+HUMAN VOICE (write like a real novelist, not an AI):
+- Filter every description through the POV character's senses and mood; don't narrate from the author's chair.
+- Lead with concrete, physical detail (footsteps, cold air, a shaking hand) before any abstraction.
+- One strong metaphor beats five decent ones. Trust it and move on.
+- Vary sentence length hard. Short. Then medium. Then a long one that actually earns its length.
+- Show emotion through behavior and small physical tells, not labels ("he was terrified" → "his fingers wouldn't stop shaking").
+- Let characters think in fragments, be wrong, misinterpret, get distracted by petty things even in a crisis.
+- Give each character a distinct voice; readers should know who's speaking without dialogue tags.
+- Cut on-the-nose exposition in dialogue. Use subtext. Let people interrupt each other.
+- Use silence and small quiet beats. Not every paragraph needs to be epic. Let scenes breathe with thoughts, feelings, and mundane observation.
+- Prefer plain words (dark, cold, sharp, heavy) over ornate ones (eldritch, inexorable, preternatural) unless the fancy word truly earns its place.
+- Avoid repeating flagship words (darkness, wrong, ancient, impossible, shadow, power) — watch yourself.
+- Trust the reader. Don't explain feelings the action already shows. Leave some mystery.
+- Combat and action should feel messy: people miss, slip, overcommit, get lucky. No perfect choreography.
+- Focus on aftermath and consequence as much as the moment itself.
+- Do NOT always open the chapter by announcing its main event. Consider opening on a thought, a small sensory detail, a quiet moment, or leftover feeling from before — unless the outline explicitly says to open on the main action.`;
 
   if (perspective) system += `\n- Write every sentence in ${perspective} perspective.`;
   if (fictionType) system += `\n- Match the conventions, pacing, tone, and dialogue style of ${fictionType}.`;
