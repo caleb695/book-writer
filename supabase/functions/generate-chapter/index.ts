@@ -207,7 +207,7 @@ serve(async (req) => {
     const ultraContextInjection = normalizeText(body.ultraContextInjection);
 
     const model = normalizeText(body.model) || DEFAULT_MODEL;
-    const temperature = typeof body.temperature === "number" ? Math.max(0, Math.min(1, body.temperature)) : 0.7;
+    const temperature = typeof body.temperature === "number" ? Math.max(0, Math.min(2, body.temperature)) : 0.7;
     const top_p = typeof body.top_p === "number" ? Math.max(0, Math.min(1, body.top_p)) : 0.9;
     const kaggleEndpoint = body.kaggleEndpoint && typeof body.kaggleEndpoint === "object" ? body.kaggleEndpoint as { url?: string; apiKey?: string; hfRepo?: string; contextWindow?: number } : null;
 
