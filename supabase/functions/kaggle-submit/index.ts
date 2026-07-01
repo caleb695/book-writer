@@ -383,8 +383,8 @@ serve(async (req) => {
     const { system, user } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
-    const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.7));
-    const topP = Math.max(0, Math.min(1, Number(body.topP ?? body.top_p) ?? 0.9));
+    const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
+    const minP = Math.max(0, Math.min(2, Number(body.minP ?? body.min_p) ?? 0.05));
     const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
@@ -396,7 +396,7 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId] || null;
     const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, topP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
 
     const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const sources: string[] = [];
