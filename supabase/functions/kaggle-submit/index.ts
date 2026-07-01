@@ -212,7 +212,7 @@ HUMAN VOICE (write like a real novelist, not an AI):
   return { system, user };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, topP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
   const code = `
 import json, os, sys, shutil, glob, traceback, subprocess, re
 WORK_DIR = '/kaggle/working/models'
