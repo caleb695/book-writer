@@ -235,6 +235,9 @@ export function useAiSettings() {
         fiction_type: next.fiction_type,
         fiction_type_enabled: next.fiction_type_enabled,
         perspective: next.perspective,
+        word_count_min: next.word_count_min,
+        word_count_max: next.word_count_max,
+        brainstorm_model: next.brainstorm_model,
       }, { onConflict: "user_id" });
 
     if (error) console.error("Save AI settings error:", error);
