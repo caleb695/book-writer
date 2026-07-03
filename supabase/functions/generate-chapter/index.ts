@@ -429,14 +429,6 @@ Do NOT pad with repetition or filler. Every word must serve the story. But you M
 
     let userContent = "";
 
-    if (contextBooksText) {
-      userContent += `REFERENCE BOOKS FROM THE SERIES (STUDY CAREFULLY — every name, detail, rule, and character trait matters for continuity):\n\n${contextBooksText}\n\n`;
-    }
-
-    if (fullManuscript) {
-      userContent += `COMPLETE CURRENT MANUSCRIPT (all chapters written so far — read EVERY detail for perfect continuity):\n\n${fullManuscript}\n\n`;
-    }
-
     if (contextBooks.length > 0) {
       userContent += `REFERENCE BOOKS FROM THE SERIES (STUDY CAREFULLY — every name, detail, rule, and character trait matters for continuity):\n\n${contextBooks.map((b, i) => `--- BOOK ${i + 1} ---\n${b}`).join("\n\n")}\n\n`;
     }
