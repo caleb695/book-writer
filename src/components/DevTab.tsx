@@ -1,11 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Loader2, StopCircle, Trash2, Lightbulb, Users, Map, BookOpen, Check, Copy, X } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Send, Loader2, StopCircle, Trash2, Lightbulb, Users, Map, BookOpen, Check, Copy, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import type { UploadedFile } from "@/hooks/useProject";
 import MemoryBadge from "@/components/MemoryBadge";
+import { AI_MODELS, formatContextWindow } from "@/hooks/useAiSettings";
 
 interface DevTabProps {
   files: UploadedFile[];
@@ -13,7 +14,8 @@ interface DevTabProps {
   ultraContextInjection?: string;
   fictionType?: string;
   perspective?: string;
-  model?: string;
+  brainstormModel?: string;
+  onChangeBrainstormModel?: (id: string) => void;
   memoryTotalCount?: number;
   memoryCategoryCounts?: Record<string, number>;
 }
@@ -34,7 +36,29 @@ const quickPrompts = [
   { icon: Lightbulb, label: "Brainstorm", prompt: "Let's brainstorm. Suggest creative ideas for subplots, twists, thematic elements, world-building details, or anything that could enrich my story." },
 ];
 
-const DevTab = ({ files, documentContent = "", ultraContextInjection = "", fictionType = "", perspective = "", model = "", memoryTotalCount = 0, memoryCategoryCounts }: DevTabProps) => {
+// Brainstorm/dev-chat runs on cloud providers only — Kaggle models are
+// reserved for chapter generation. Exclude them from the picker.
+const BRAINSTORM_MODELS = AI_MODELS.filter(m => m.provider !== "kaggle");
+
+const DevTab = ({ files, documentContent = "", ultraContextInjection = "", fictionType = "", perspective = "", brainstormModel = "mistral-large-latest", onChangeBrainstormModel, memoryTotalCount = 0, memoryCategoryCounts }: DevTabProps) => {
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
+  const modelRef = useRef<HTMLDivElement>(null);
+  const filteredModels = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return BRAINSTORM_MODELS;
+    return BRAINSTORM_MODELS.filter(m => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+  }, [modelSearch]);
+  const currentModel = BRAINSTORM_MODELS.find(m => m.id === brainstormModel) || BRAINSTORM_MODELS[0];
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -126,7 +150,7 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
           ultraContextInjection,
           fictionType,
           perspective,
-          model,
+          model: brainstormModel,
         }),
         signal: controller.signal,
       });
@@ -185,7 +209,7 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
     } finally {
       setIsStreaming(false);
     }
-  }, [messages, isStreaming, outline, documentContent, contextBooks, styleGuides, ultraContextInjection, fictionType, perspective, model]);
+  }, [messages, isStreaming, outline, documentContent, contextBooks, styleGuides, ultraContextInjection, fictionType, perspective, brainstormModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -208,6 +232,45 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <div ref={modelRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setModelOpen(v => !v)}
+                className="text-[11px] px-2 py-1 rounded-md border border-border bg-background hover:bg-accent text-foreground max-w-[200px] truncate"
+                title={currentModel?.label}
+              >
+                {currentModel?.label || "Select model"}
+              </button>
+              {modelOpen && (
+                <div className="absolute right-0 top-full mt-1 w-72 max-h-80 overflow-hidden rounded-md border border-border bg-popover shadow-lg z-50 flex flex-col">
+                  <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border">
+                    <Search className="h-3 w-3 text-muted-foreground" />
+                    <input
+                      autoFocus
+                      value={modelSearch}
+                      onChange={e => setModelSearch(e.target.value)}
+                      placeholder="Search models…"
+                      className="flex-1 bg-transparent text-xs outline-none"
+                    />
+                  </div>
+                  <div className="overflow-y-auto">
+                    {filteredModels.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => { onChangeBrainstormModel?.(m.id); setModelOpen(false); setModelSearch(""); }}
+                        className={`w-full text-left px-2 py-1.5 text-xs hover:bg-accent flex items-center justify-between gap-2 ${m.id === brainstormModel ? "bg-accent/50" : ""}`}
+                      >
+                        <span className="truncate">{m.label}</span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">{formatContextWindow(m.contextWindow)}</span>
+                      </button>
+                    ))}
+                    {filteredModels.length === 0 && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground text-center">No matches</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <MemoryBadge
               injection={ultraContextInjection}
               totalTriples={memoryTotalCount}

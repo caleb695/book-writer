@@ -11,7 +11,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs
 
 interface StyleTabProps {
   files: UploadedFile[];
-  onUpload: (name: string, content: string, type: "context" | "outline" | "style") => Promise<UploadedFile | null>;
+  onUpload: (name: string, content: string, type: "context" | "outline" | "style" | "draft") => Promise<UploadedFile | null>;
   onDelete: (id: string) => void;
   styleMemory: StyleMemory | null;
   stylePatterns: StylePattern[];
@@ -19,7 +19,7 @@ interface StyleTabProps {
 }
 
 const ANALYZE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-style`;
-const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip";
+const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip,.epub,.mobi";
 
 // --- File extraction helpers ---
 async function extractPdfText(file: File): Promise<string> {
@@ -42,9 +42,18 @@ async function extractFileText(file: File): Promise<string> {
     const result = await mammoth.extractRawText({ arrayBuffer });
     return result.value || "";
   }
-  if (ext === "zip") {
-    const text = await file.text();
-    return text.replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s{3,}/g, "\n\n");
+  if (ext === "epub" || ext === "mobi" || ext === "zip") {
+    // Best-effort text extraction from binary/container formats: read as text,
+    // strip non-printable bytes and any HTML/XML tags, and collapse whitespace.
+    // Good enough to feed style analysis; for perfect fidelity users can
+    // pre-convert to .txt or .docx.
+    const raw = await file.text();
+    return raw
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&[a-z]+;/gi, " ")
+      .replace(/[^\x20-\x7E\n\r\t]/g, " ")
+      .replace(/\s{3,}/g, "\n\n")
+      .trim();
   }
   return file.text();
 }
@@ -96,7 +105,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
     for (let i = 0; i < selectedFiles.length; i++) {
       const file = selectedFiles[i];
       const ext = file.name.split(".").pop()?.toLowerCase() || "";
-      const validExts = ["pdf", "json", "jsonl", "csv", "txt", "md", "docx", "zip"];
+      const validExts = ["pdf", "json", "jsonl", "csv", "txt", "md", "docx", "zip", "epub", "mobi"];
       if (!validExts.includes(ext)) {
         toast.error(`${file.name}: Unsupported file type.`);
         continue;
@@ -199,7 +208,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
       >
         <Upload className="h-6 w-6 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Upload files to analyze writing style</span>
-        <span className="text-[10px] text-muted-foreground/60">PDF, TXT, MD, DOCX, JSON, JSONL, CSV, ZIP — duplicate detection enabled</span>
+        <span className="text-[10px] text-muted-foreground/60">PDF, TXT, MD, DOCX, EPUB, MOBI, JSON, JSONL, CSV, ZIP — duplicate detection enabled</span>
         <input ref={fileRef} type="file" accept={ACCEPTED_TYPES} multiple className="hidden" onChange={handleUpload} />
       </div>
 

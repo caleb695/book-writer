@@ -172,6 +172,12 @@ Rules:
 - Preserve continuity with all provided manuscript and reference material.
 - Keep names, places, relationships, and canonical facts exact.
 
+CANON FIDELITY — DO NOT INVENT NEW INFORMATION:
+- You MUST NOT add new named characters, new locations, new organizations, new items/artifacts, new powers/abilities, new rules of the world, new backstory, new relationships, new numbers/dates, or any other factual detail that the user did not write in the outline, manuscript, reference materials, or memory context.
+- You MAY dramatize what happens in the scene: dialogue, physical action, body language, small sensory detail, weather/atmosphere, and the character's internal thoughts and reactions. Extra micro-events (a stumble, a pause, a shared look) are fine as long as they do NOT introduce new lore, new named entities, or new plot-affecting facts.
+- If the outline is silent about a detail (a name, a place, a rule, a history), leave it silent. Use pronouns, generic descriptions ("the guard", "the old building"), or move around it. Never invent a name or a fact to fill the gap.
+- Continue existing plot threads exactly as written; do NOT add twists, reveals, foreshadowing, or subplots the user didn't write.
+
 HUMAN VOICE (write like a real novelist, not an AI):
 - Filter every description through the POV character's senses and mood; don't narrate from the author's chair.
 - Lead with concrete, physical detail (footsteps, cold air, a shaking hand) before any abstraction.
@@ -196,8 +202,11 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
   if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
 
+  const draftContexts = compressCollection(body.draftContexts, 12_000, 8_000);
+
   let user = "";
   if (contextBooks.length > 0) user += `REFERENCE MATERIALS:\n\n${contextBooks.join("\n\n---\n\n")}\n\n`;
+  if (draftContexts.length > 0) user += `DRAFT / PRIOR OUTLINES (canonical facts only — do NOT expand into prose, use ONLY as source of established details):\n\n${draftContexts.join("\n\n---\n\n")}\n\n`;
   if (fullManuscript) user += `CURRENT MANUSCRIPT:\n\n${fullManuscript}\n\n`;
   else if (previousChapters) user += `PREVIOUS CHAPTERS:\n\n${previousChapters}\n\n`;
 
@@ -207,7 +216,7 @@ HUMAN VOICE (write like a real novelist, not an AI):
 
   user += `CHAPTER ${chapterNumber} OUTLINE:\n\n${outline}`;
   if (rewriteNotes) user += `\n\nRewrite instructions: ${rewriteNotes}`;
-  user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity.`;
+  user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity. Do NOT invent any names, places, or facts that are not already established above.`;
 
   return { system, user };
 }
@@ -331,28 +340,63 @@ try:
     T = float(PROMPT['temperature'])
     MP = float(PROMPT['min_p'])
 
-    # Single-pass generation is materially faster on Kaggle T4 than the old
-    # section-by-section loop because each extra pass re-evaluates a growing
-    # prompt on a 20GB+ GGUF. Keep the word-count target in the prompt and let
-    # the polish pipeline handle quality/continuity afterward.
-    budget_tokens = min(int(PROMPT['max_tokens']), int(WORD_MAX * 1.75) + 256)
-    print(f'LOOMINK_SINGLE_PASS budget={budget_tokens} target={WORD_MIN}-{WORD_MAX} temp={T} min_p={MP}')
-    out = llm.create_chat_completion(
-        messages=[
-            {'role': 'system', 'content': PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary."},
-            {'role': 'user', 'content': PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}."},
-        ],
-        max_tokens=budget_tokens,
-        temperature=T,
-        top_p=1.0,
-        min_p=MP,
-    )
-    full_chapter = (out['choices'][0]['message']['content'] or '').strip()
-    full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter)
+    # Generation with automatic continuation when the model hits its output-token
+    # cap before finishing the chapter (finish_reason == 'length'). Each pass gets
+    # its own token budget; we stitch the pieces together and stop as soon as the
+    # model finishes naturally or we hit MAX_PASSES.
+    per_pass_budget = min(int(PROMPT['max_tokens']), 4096)
+    MAX_PASSES = 6
+    base_system = PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary. Do not invent any names, places, or facts not already established in the provided materials."
+    base_user = PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}."
+    full_chapter = ''
+    finish_reason = None
+    for pass_idx in range(MAX_PASSES):
+        if pass_idx == 0:
+            msgs = [
+                {'role': 'system', 'content': base_system},
+                {'role': 'user', 'content': base_user},
+            ]
+        else:
+            tail = full_chapter[-4000:]
+            msgs = [
+                {'role': 'system', 'content': base_system + "\\n\\nYou are RESUMING a chapter draft. Continue seamlessly from where the previous text ends. Do NOT restart the chapter, do NOT repeat the heading, do NOT repeat any prior sentence, do NOT summarize. Just keep writing the next prose. Stop only when the chapter is genuinely finished."},
+                {'role': 'assistant', 'content': tail},
+                {'role': 'user', 'content': 'Continue the chapter from exactly where the last sentence stopped. Do not repeat any text above. Do not add commentary. Just keep writing.'},
+            ]
+        print(f'LOOMINK_PASS pass={pass_idx+1} budget={per_pass_budget} temp={T} min_p={MP} have={wc(full_chapter)}')
+        out = llm.create_chat_completion(
+            messages=msgs,
+            max_tokens=per_pass_budget,
+            temperature=T,
+            top_p=1.0,
+            min_p=MP,
+        )
+        choice = out['choices'][0]
+        piece = (choice.get('message', {}).get('content') or '').strip()
+        finish_reason = choice.get('finish_reason')
+        if not piece:
+            print('LOOMINK_EMPTY_PIECE finish=', finish_reason)
+            break
+        if pass_idx == 0:
+            full_chapter = piece
+        else:
+            # Avoid duplicating any tail overlap the model repeated.
+            join = full_chapter
+            for k in range(min(400, len(piece), len(join)), 40, -1):
+                if join.endswith(piece[:k]):
+                    piece = piece[k:]
+                    break
+            full_chapter = join + piece
+        print(f'LOOMINK_PASS_DONE pass={pass_idx+1} finish={finish_reason} words={wc(full_chapter)}')
+        if finish_reason != 'length':
+            break
+        if wc(full_chapter) >= WORD_MAX:
+            break
+    full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter).strip()
     final_count = wc(full_chapter)
     with open('/kaggle/working/loomink_output.json', 'w') as f:
-        json.dump({'ok': True, 'content': full_chapter, 'word_count': final_count, 'target': [WORD_MIN, WORD_MAX]}, f)
-    print('LOOMINK_DONE', final_count, 'words')
+        json.dump({'ok': True, 'content': full_chapter, 'word_count': final_count, 'target': [WORD_MIN, WORD_MAX], 'finish_reason': finish_reason}, f)
+    print('LOOMINK_DONE', final_count, 'words finish=', finish_reason)
 except Exception as e:
     with open('/kaggle/working/loomink_output.json', 'w') as f:
         json.dump({'ok': False, 'error': str(e), 'trace': traceback.format_exc()}, f)
@@ -385,10 +429,15 @@ serve(async (req) => {
 
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
     const minP = Math.max(0, Math.min(2, Number(body.minP ?? body.min_p) ?? 0.05));
-    const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
+    // n_ctx must fit prompt + entire generated chapter. Bump to 16k minimum so
+    // multi-pass continuation has room. Cap at 32k because Kaggle T4 VRAM is
+    // tight once a large GGUF is loaded (KV-cache scales linearly with ctx).
+    const requestedCtx = Number(body.contextWindow) || 8192;
+    const ctxSize = Math.min(32768, Math.max(16384, requestedCtx));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
-    const defaultMaxTokens = Math.min(8192, Math.max(1024, Math.ceil(wordMax * 1.75) + 256));
+    // Per-pass budget stays modest; continuation loop stitches passes together.
+    const defaultMaxTokens = 4096;
     const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || defaultMaxTokens));
 
     // Stable per-model slug — re-pushing creates a new version of the SAME

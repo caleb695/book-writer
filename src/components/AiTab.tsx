@@ -183,6 +183,7 @@ const AiTab = ({
 
   const outline = files.find(f => f.file_type === "outline")?.content || "";
   const contextBooks = files.filter(f => f.file_type === "context").map(f => f.content);
+  const draftContexts = files.filter(f => f.file_type === "draft").map(f => f.content);
 
   const committedChapters = messages
     .filter(m => m.role === "assistant" && m.committed)
@@ -662,6 +663,7 @@ const AiTab = ({
       const draftPayload: Record<string, unknown> = {
         outline,
         contextBooks,
+        draftContexts: draftContexts.length > 0 ? draftContexts : undefined,
         chapterNumber: targetChapter,
         rewriteNotes: rewrite ? notes : undefined,
         previousChapters: committedChapters,
@@ -772,7 +774,7 @@ const AiTab = ({
       generatingMsgIdRef.current = null;
       jobIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages, kickOrchestrator]);
+  }, [outline, contextBooks, draftContexts, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages, kickOrchestrator]);
 
   // Mount-only reattach. The server orchestrator + pg_cron watchdog drive the
   // job to completion; the client only needs to (a) reap clearly-dead jobs and
