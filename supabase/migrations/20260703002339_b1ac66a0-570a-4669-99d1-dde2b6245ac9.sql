@@ -1,0 +1,2 @@
+ALTER TABLE public.uploaded_files DROP CONSTRAINT IF EXISTS uploaded_files_file_type_check;
+ALTER TABLE public.uploaded_files ADD CONSTRAINT uploaded_files_file_type_check CHECK (file_type = ANY (ARRAY['context'::text, 'outline'::text, 'style'::text, 'draft'::text]));
