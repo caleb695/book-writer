@@ -232,6 +232,45 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <div ref={modelRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setModelOpen(v => !v)}
+                className="text-[11px] px-2 py-1 rounded-md border border-border bg-background hover:bg-accent text-foreground max-w-[200px] truncate"
+                title={currentModel?.label}
+              >
+                {currentModel?.label || "Select model"}
+              </button>
+              {modelOpen && (
+                <div className="absolute right-0 top-full mt-1 w-72 max-h-80 overflow-hidden rounded-md border border-border bg-popover shadow-lg z-50 flex flex-col">
+                  <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border">
+                    <Search className="h-3 w-3 text-muted-foreground" />
+                    <input
+                      autoFocus
+                      value={modelSearch}
+                      onChange={e => setModelSearch(e.target.value)}
+                      placeholder="Search models…"
+                      className="flex-1 bg-transparent text-xs outline-none"
+                    />
+                  </div>
+                  <div className="overflow-y-auto">
+                    {filteredModels.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => { onChangeBrainstormModel?.(m.id); setModelOpen(false); setModelSearch(""); }}
+                        className={`w-full text-left px-2 py-1.5 text-xs hover:bg-accent flex items-center justify-between gap-2 ${m.id === brainstormModel ? "bg-accent/50" : ""}`}
+                      >
+                        <span className="truncate">{m.label}</span>
+                        <span className="text-[10px] text-muted-foreground shrink-0">{formatContextWindow(m.contextWindow)}</span>
+                      </button>
+                    ))}
+                    {filteredModels.length === 0 && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground text-center">No matches</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <MemoryBadge
               injection={ultraContextInjection}
               totalTriples={memoryTotalCount}
