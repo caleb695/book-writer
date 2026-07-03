@@ -88,15 +88,17 @@ const Index = () => {
     }
   }, [messages, commitMessage, learnFromChapter]);
 
-  // Wrap uploadFile so uploading a context/outline file pre-seeds Memori with canonical facts
-  const handleUploadFile = useCallback(async (fileName: string, content: string, fileType: "context" | "outline" | "style") => {
+  // Wrap uploadFile so uploading a context/outline/draft file pre-seeds Memori with canonical facts
+  const handleUploadFile = useCallback(async (fileName: string, content: string, fileType: "context" | "outline" | "style" | "draft") => {
     const file = await uploadFile(fileName, content, fileType);
     if (!file) return null;
     // Style files have their own pipeline (analyze-style) — skip triple extraction
     if (fileType === "style") return file;
     // Run extraction in the background so the UI doesn't block
     (async () => {
-      const label = fileType === "outline" ? `Outline: ${fileName}` : `Reference: ${fileName}`;
+      const label = fileType === "outline" ? `Outline: ${fileName}`
+        : fileType === "draft" ? `Draft outline: ${fileName}`
+        : `Reference: ${fileName}`;
       toast(`Reading ${fileName} into memory…`, { duration: 3000 });
       const result = await learnFromText(content, label);
       if (result.stored > 0 || result.merged > 0) {
