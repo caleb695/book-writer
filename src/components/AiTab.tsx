@@ -183,6 +183,7 @@ const AiTab = ({
 
   const outline = files.find(f => f.file_type === "outline")?.content || "";
   const contextBooks = files.filter(f => f.file_type === "context").map(f => f.content);
+  const draftContexts = files.filter(f => f.file_type === "draft").map(f => f.content);
 
   const committedChapters = messages
     .filter(m => m.role === "assistant" && m.committed)
