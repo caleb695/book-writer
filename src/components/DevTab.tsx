@@ -209,7 +209,7 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
     } finally {
       setIsStreaming(false);
     }
-  }, [messages, isStreaming, outline, documentContent, contextBooks, styleGuides, ultraContextInjection, fictionType, perspective, model]);
+  }, [messages, isStreaming, outline, documentContent, contextBooks, styleGuides, ultraContextInjection, fictionType, perspective, brainstormModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
