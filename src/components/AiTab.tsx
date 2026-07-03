@@ -663,6 +663,7 @@ const AiTab = ({
       const draftPayload: Record<string, unknown> = {
         outline,
         contextBooks,
+        draftContexts: draftContexts.length > 0 ? draftContexts : undefined,
         chapterNumber: targetChapter,
         rewriteNotes: rewrite ? notes : undefined,
         previousChapters: committedChapters,
