@@ -150,7 +150,7 @@ const DevTab = ({ files, documentContent = "", ultraContextInjection = "", ficti
           ultraContextInjection,
           fictionType,
           perspective,
-          model,
+          model: brainstormModel,
         }),
         signal: controller.signal,
       });
