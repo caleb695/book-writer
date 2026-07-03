@@ -1,11 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Loader2, StopCircle, Trash2, Lightbulb, Users, Map, BookOpen, Check, Copy, X } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Send, Loader2, StopCircle, Trash2, Lightbulb, Users, Map, BookOpen, Check, Copy, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import type { UploadedFile } from "@/hooks/useProject";
 import MemoryBadge from "@/components/MemoryBadge";
+import { AI_MODELS, formatContextWindow } from "@/hooks/useAiSettings";
 
 interface DevTabProps {
   files: UploadedFile[];
@@ -13,7 +14,8 @@ interface DevTabProps {
   ultraContextInjection?: string;
   fictionType?: string;
   perspective?: string;
-  model?: string;
+  brainstormModel?: string;
+  onChangeBrainstormModel?: (id: string) => void;
   memoryTotalCount?: number;
   memoryCategoryCounts?: Record<string, number>;
 }
@@ -34,7 +36,29 @@ const quickPrompts = [
   { icon: Lightbulb, label: "Brainstorm", prompt: "Let's brainstorm. Suggest creative ideas for subplots, twists, thematic elements, world-building details, or anything that could enrich my story." },
 ];
 
-const DevTab = ({ files, documentContent = "", ultraContextInjection = "", fictionType = "", perspective = "", model = "", memoryTotalCount = 0, memoryCategoryCounts }: DevTabProps) => {
+// Brainstorm/dev-chat runs on cloud providers only — Kaggle models are
+// reserved for chapter generation. Exclude them from the picker.
+const BRAINSTORM_MODELS = AI_MODELS.filter(m => m.provider !== "kaggle");
+
+const DevTab = ({ files, documentContent = "", ultraContextInjection = "", fictionType = "", perspective = "", brainstormModel = "mistral-large-latest", onChangeBrainstormModel, memoryTotalCount = 0, memoryCategoryCounts }: DevTabProps) => {
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
+  const modelRef = useRef<HTMLDivElement>(null);
+  const filteredModels = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return BRAINSTORM_MODELS;
+    return BRAINSTORM_MODELS.filter(m => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+  }, [modelSearch]);
+  const currentModel = BRAINSTORM_MODELS.find(m => m.id === brainstormModel) || BRAINSTORM_MODELS[0];
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
