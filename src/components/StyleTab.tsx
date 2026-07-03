@@ -42,9 +42,18 @@ async function extractFileText(file: File): Promise<string> {
     const result = await mammoth.extractRawText({ arrayBuffer });
     return result.value || "";
   }
-  if (ext === "zip") {
-    const text = await file.text();
-    return text.replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s{3,}/g, "\n\n");
+  if (ext === "epub" || ext === "mobi" || ext === "zip") {
+    // Best-effort text extraction from binary/container formats: read as text,
+    // strip non-printable bytes and any HTML/XML tags, and collapse whitespace.
+    // Good enough to feed style analysis; for perfect fidelity users can
+    // pre-convert to .txt or .docx.
+    const raw = await file.text();
+    return raw
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&[a-z]+;/gi, " ")
+      .replace(/[^\x20-\x7E\n\r\t]/g, " ")
+      .replace(/\s{3,}/g, "\n\n")
+      .trim();
   }
   return file.text();
 }
