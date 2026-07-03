@@ -208,7 +208,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
       >
         <Upload className="h-6 w-6 text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Upload files to analyze writing style</span>
-        <span className="text-[10px] text-muted-foreground/60">PDF, TXT, MD, DOCX, JSON, JSONL, CSV, ZIP — duplicate detection enabled</span>
+        <span className="text-[10px] text-muted-foreground/60">PDF, TXT, MD, DOCX, EPUB, MOBI, JSON, JSONL, CSV, ZIP — duplicate detection enabled</span>
         <input ref={fileRef} type="file" accept={ACCEPTED_TYPES} multiple className="hidden" onChange={handleUpload} />
       </div>
 
