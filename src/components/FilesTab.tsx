@@ -121,6 +121,39 @@ const FilesTab = ({ files, onUpload, onDelete }: FilesTabProps) => {
         ))}
       </section>
 
+      {/* Draft Outline Zone (past-context, details only) */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-medium text-foreground">Draft Outlines / Past Context</h2>
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+            Optional
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Upload rough drafts, notes, or bullet-point outlines of past books/chapters (.txt, .md, .docx). The AI treats these as canonical established details only — it will NOT re-dramatize them, only use them as source of facts.
+        </p>
+        <div
+          onClick={() => !uploading && draftRef.current?.click()}
+          className={`border-2 border-dashed border-border rounded-lg p-8 flex flex-col items-center justify-center gap-3 transition-colors ${
+            uploading ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-muted-foreground/40"
+          }`}
+        >
+          <Upload className="h-6 w-6 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Drop draft outlines or click to upload</span>
+          <input ref={draftRef} type="file" accept={ACCEPTED_EXTENSIONS} className="hidden" onChange={e => handleUpload(e, "draft")} />
+        </div>
+        {draftFiles.map(f => (
+          <div key={f.id} className="flex items-center gap-2 p-3 rounded-md bg-muted">
+            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+            <span className="text-sm text-foreground flex-1 truncate">{f.file_name}</span>
+            <button onClick={() => onDelete(f.id)} className="text-muted-foreground hover:text-destructive transition-colors">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </section>
+
+
       {/* Outline Zone */}
       <section className="space-y-3">
         <div className="flex items-center gap-2">
