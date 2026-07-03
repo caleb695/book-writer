@@ -429,10 +429,15 @@ serve(async (req) => {
 
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
     const minP = Math.max(0, Math.min(2, Number(body.minP ?? body.min_p) ?? 0.05));
-    const ctxSize = Math.min(32768, Math.max(2048, Number(body.contextWindow) || 8192));
+    // n_ctx must fit prompt + entire generated chapter. Bump to 16k minimum so
+    // multi-pass continuation has room. Cap at 32k because Kaggle T4 VRAM is
+    // tight once a large GGUF is loaded (KV-cache scales linearly with ctx).
+    const requestedCtx = Number(body.contextWindow) || 8192;
+    const ctxSize = Math.min(32768, Math.max(16384, requestedCtx));
     const wordMin = Math.max(100, Number(body.wordCountMin) || 3500);
     const wordMax = Math.max(wordMin, Number(body.wordCountMax) || 4000);
-    const defaultMaxTokens = Math.min(8192, Math.max(1024, Math.ceil(wordMax * 1.75) + 256));
+    // Per-pass budget stays modest; continuation loop stitches passes together.
+    const defaultMaxTokens = 4096;
     const maxTokens = Math.min(8192, Math.max(256, Number(body.maxTokens) || defaultMaxTokens));
 
     // Stable per-model slug — re-pushing creates a new version of the SAME
