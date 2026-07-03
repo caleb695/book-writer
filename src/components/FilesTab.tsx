@@ -7,7 +7,7 @@ import type { UploadedFile } from "@/hooks/useProject";
 
 interface FilesTabProps {
   files: UploadedFile[];
-  onUpload: (name: string, content: string, type: "context" | "outline" | "style") => Promise<UploadedFile | null>;
+  onUpload: (name: string, content: string, type: "context" | "outline" | "style" | "draft") => Promise<UploadedFile | null>;
   onDelete: (id: string) => void;
 }
 
