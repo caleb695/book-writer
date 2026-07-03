@@ -172,6 +172,12 @@ Rules:
 - Preserve continuity with all provided manuscript and reference material.
 - Keep names, places, relationships, and canonical facts exact.
 
+CANON FIDELITY — DO NOT INVENT NEW INFORMATION:
+- You MUST NOT add new named characters, new locations, new organizations, new items/artifacts, new powers/abilities, new rules of the world, new backstory, new relationships, new numbers/dates, or any other factual detail that the user did not write in the outline, manuscript, reference materials, or memory context.
+- You MAY dramatize what happens in the scene: dialogue, physical action, body language, small sensory detail, weather/atmosphere, and the character's internal thoughts and reactions. Extra micro-events (a stumble, a pause, a shared look) are fine as long as they do NOT introduce new lore, new named entities, or new plot-affecting facts.
+- If the outline is silent about a detail (a name, a place, a rule, a history), leave it silent. Use pronouns, generic descriptions ("the guard", "the old building"), or move around it. Never invent a name or a fact to fill the gap.
+- Continue existing plot threads exactly as written; do NOT add twists, reveals, foreshadowing, or subplots the user didn't write.
+
 HUMAN VOICE (write like a real novelist, not an AI):
 - Filter every description through the POV character's senses and mood; don't narrate from the author's chair.
 - Lead with concrete, physical detail (footsteps, cold air, a shaking hand) before any abstraction.
@@ -196,8 +202,11 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
   if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
 
+  const draftContexts = compressCollection(body.draftContexts, 12_000, 8_000);
+
   let user = "";
   if (contextBooks.length > 0) user += `REFERENCE MATERIALS:\n\n${contextBooks.join("\n\n---\n\n")}\n\n`;
+  if (draftContexts.length > 0) user += `DRAFT / PRIOR OUTLINES (canonical facts only — do NOT expand into prose, use ONLY as source of established details):\n\n${draftContexts.join("\n\n---\n\n")}\n\n`;
   if (fullManuscript) user += `CURRENT MANUSCRIPT:\n\n${fullManuscript}\n\n`;
   else if (previousChapters) user += `PREVIOUS CHAPTERS:\n\n${previousChapters}\n\n`;
 
@@ -207,7 +216,7 @@ HUMAN VOICE (write like a real novelist, not an AI):
 
   user += `CHAPTER ${chapterNumber} OUTLINE:\n\n${outline}`;
   if (rewriteNotes) user += `\n\nRewrite instructions: ${rewriteNotes}`;
-  user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity.`;
+  user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity. Do NOT invent any names, places, or facts that are not already established above.`;
 
   return { system, user };
 }
