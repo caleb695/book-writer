@@ -774,7 +774,7 @@ const AiTab = ({
       generatingMsgIdRef.current = null;
       jobIdRef.current = null;
     }
-  }, [outline, contextBooks, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages, kickOrchestrator]);
+  }, [outline, contextBooks, draftContexts, chapterNum, validChapter, committedChapters, isGenerating, wordCountMin, wordCountMax, perspective, styleGuides, aiSettings, onAddMessage, onDeleteMessage, setMessages, documentContent, ultraContextInjection, stylePatterns, styleMemory, projectId, userId, messages, kickOrchestrator]);
 
   // Mount-only reattach. The server orchestrator + pg_cron watchdog drive the
   // job to completion; the client only needs to (a) reap clearly-dead jobs and
