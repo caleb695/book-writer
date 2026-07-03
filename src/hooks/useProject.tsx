@@ -96,7 +96,7 @@ export function useProject() {
     return () => { cancelled = true; };
   }, [user]);
 
-  const uploadFile = useCallback(async (fileName: string, content: string, fileType: "context" | "outline" | "style") => {
+  const uploadFile = useCallback(async (fileName: string, content: string, fileType: "context" | "outline" | "style" | "draft") => {
     if (!projectId || !user) return null;
     const { data, error } = await supabase.from("uploaded_files").insert({
       project_id: projectId,
@@ -107,7 +107,11 @@ export function useProject() {
     }).select().single();
     if (error) { toast.error("Upload failed: " + error.message); return null; }
     if (data) setFiles(prev => [...prev, data as UploadedFile]);
-    toast.success(fileType === "outline" ? "Outline uploaded" : fileType === "style" ? "Style file uploaded" : "Context uploaded");
+    const label = fileType === "outline" ? "Outline uploaded"
+      : fileType === "style" ? "Style file uploaded"
+      : fileType === "draft" ? "Draft outline uploaded"
+      : "Context uploaded";
+    toast.success(label);
     return data as UploadedFile;
   }, [projectId, user]);
 
