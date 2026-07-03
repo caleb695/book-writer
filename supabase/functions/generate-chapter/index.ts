@@ -437,6 +437,18 @@ Do NOT pad with repetition or filler. Every word must serve the story. But you M
       userContent += `COMPLETE CURRENT MANUSCRIPT (all chapters written so far — read EVERY detail for perfect continuity):\n\n${fullManuscript}\n\n`;
     }
 
+    if (contextBooks.length > 0) {
+      userContent += `REFERENCE BOOKS FROM THE SERIES (STUDY CAREFULLY — every name, detail, rule, and character trait matters for continuity):\n\n${contextBooks.map((b, i) => `--- BOOK ${i + 1} ---\n${b}`).join("\n\n")}\n\n`;
+    }
+
+    if (draftContexts.length > 0) {
+      userContent += `DRAFT / PRIOR OUTLINES (canonical established facts and plot notes only — do NOT re-dramatize these; use them ONLY as the source of established details, names, and events):\n\n${draftContexts.map((d, i) => `--- DRAFT ${i + 1} ---\n${d}`).join("\n\n")}\n\n`;
+    }
+
+    if (fullManuscript) {
+      userContent += `COMPLETE CURRENT MANUSCRIPT (all chapters written so far — read EVERY detail for perfect continuity):\n\n${fullManuscript}\n\n`;
+    }
+
     if (previousChapters && !fullManuscript) {
       userContent += `PREVIOUSLY WRITTEN CHAPTERS (maintain continuity, do not repeat any of this text):\n\n${previousChapters}\n\n`;
     }
