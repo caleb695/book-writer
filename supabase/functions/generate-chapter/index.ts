@@ -193,6 +193,7 @@ serve(async (req) => {
     const chapterNumber = Number.isFinite(Number(body.chapterNumber)) ? Number(body.chapterNumber) : 1;
     const outline = extractRelevantOutline(body.outline, chapterNumber);
     const contextBooks = compressCollection(body.contextBooks, CONTEXT_TOTAL_MAX_CHARS, CONTEXT_ITEM_MAX_CHARS, "sample");
+    const draftContexts = compressCollection(body.draftContexts, 15_000, 8_000, "sample");
     const rewriteNotes = normalizeText(body.rewriteNotes);
     const previousChapters = takeTail(body.previousChapters ?? "", PREVIOUS_CHAPTERS_MAX_CHARS);
     const fullManuscript = sampleLongText(body.fullManuscript ?? "", FULL_MANUSCRIPT_MAX_CHARS);
