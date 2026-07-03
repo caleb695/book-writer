@@ -43,13 +43,15 @@ const readFileContent = async (file: File): Promise<string> => {
 
 const FilesTab = ({ files, onUpload, onDelete }: FilesTabProps) => {
   const contextRef = useRef<HTMLInputElement>(null);
+  const draftRef = useRef<HTMLInputElement>(null);
   const outlineRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
   const contextFiles = files.filter(f => f.file_type === "context");
+  const draftFiles = files.filter(f => f.file_type === "draft");
   const outlineFiles = files.filter(f => f.file_type === "outline");
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "context" | "outline") => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "context" | "outline" | "draft") => {
     const file = e.target.files?.[0];
     if (!file) return;
 
