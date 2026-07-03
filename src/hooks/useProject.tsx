@@ -6,7 +6,7 @@ import { toast } from "sonner";
 export interface UploadedFile {
   id: string;
   file_name: string;
-  file_type: "context" | "outline" | "style";
+  file_type: "context" | "outline" | "style" | "draft";
   content: string;
   created_at: string;
 }
