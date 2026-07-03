@@ -189,7 +189,8 @@ const Index = () => {
           ultraContextInjection={ultraContextInjection}
           fictionType={aiSettings.fiction_type_enabled ? aiSettings.fiction_type : ""}
           perspective={aiSettings.perspective}
-          model={aiSettings.model}
+          brainstormModel={aiSettings.brainstorm_model || aiSettings.model}
+          onChangeBrainstormModel={(id) => updateAiSettings({ brainstorm_model: id })}
           memoryTotalCount={memoriTriples.length}
           memoryCategoryCounts={memoryCategoryCounts}
         />
