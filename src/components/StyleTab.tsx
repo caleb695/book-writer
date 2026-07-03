@@ -105,7 +105,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
     for (let i = 0; i < selectedFiles.length; i++) {
       const file = selectedFiles[i];
       const ext = file.name.split(".").pop()?.toLowerCase() || "";
-      const validExts = ["pdf", "json", "jsonl", "csv", "txt", "md", "docx", "zip"];
+      const validExts = ["pdf", "json", "jsonl", "csv", "txt", "md", "docx", "zip", "epub", "mobi"];
       if (!validExts.includes(ext)) {
         toast.error(`${file.name}: Unsupported file type.`);
         continue;
