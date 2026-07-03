@@ -11,7 +11,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs
 
 interface StyleTabProps {
   files: UploadedFile[];
-  onUpload: (name: string, content: string, type: "context" | "outline" | "style") => Promise<UploadedFile | null>;
+  onUpload: (name: string, content: string, type: "context" | "outline" | "style" | "draft") => Promise<UploadedFile | null>;
   onDelete: (id: string) => void;
   styleMemory: StyleMemory | null;
   stylePatterns: StylePattern[];
@@ -19,7 +19,7 @@ interface StyleTabProps {
 }
 
 const ANALYZE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-style`;
-const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip";
+const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip,.epub,.mobi";
 
 // --- File extraction helpers ---
 async function extractPdfText(file: File): Promise<string> {
