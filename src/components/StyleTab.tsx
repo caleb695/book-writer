@@ -96,12 +96,96 @@ function getConfidenceLevel(p: StylePattern) {
 }
 
 const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis }: StyleTabProps) => {
+  const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [showPatterns, setShowPatterns] = useState(true);
+  const finalizedJobsRef = useRef<Set<string>>(new Set());
 
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
+
+  // Resume any in-flight analysis jobs from the DB when the tab (re)mounts.
+  // This is what makes analysis truly background: even after leaving the app
+  // or switching tabs, coming back reattaches the pending UI to the job.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("style_analysis_jobs")
+        .select("id, file_name, status, chunks_total, chunks_completed")
+        .eq("user_id", user.id)
+        .eq("status", "running")
+        .order("updated_at", { ascending: false });
+      if (cancelled || !data?.length) return;
+      setPendingFiles(prev => {
+        const existingJobIds = new Set(prev.map(p => p.jobId).filter(Boolean));
+        const additions = data
+          .filter(j => !existingJobIds.has(j.id))
+          .map(j => ({
+            id: crypto.randomUUID(),
+            jobId: j.id,
+            name: j.file_name,
+            status: "analyzing" as const,
+            chunksTotal: j.chunks_total ?? undefined,
+            chunksCompleted: j.chunks_completed ?? undefined,
+          }));
+        return [...prev, ...additions];
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [user]);
+
+  // Poll running jobs. Each active DB job is checked every 3s until done/failed.
+  useEffect(() => {
+    const active = pendingFiles.filter(p => p.jobId && (p.status === "analyzing" || p.status === "synthesizing"));
+    if (active.length === 0) return;
+    const interval = setInterval(async () => {
+      for (const pf of active) {
+        if (!pf.jobId) continue;
+        const { data: job } = await supabase
+          .from("style_analysis_jobs")
+          .select("id, status, chunks_total, chunks_completed, synthesis, contradictions, error")
+          .eq("id", pf.jobId)
+          .maybeSingle();
+        if (!job) continue;
+
+        // Progress update
+        setPendingFiles(prev => prev.map(p => p.id === pf.id
+          ? { ...p, chunksTotal: job.chunks_total ?? p.chunksTotal, chunksCompleted: job.chunks_completed ?? p.chunksCompleted, status: job.status === "running" && (job.chunks_completed ?? 0) > 0 ? "synthesizing" : p.status }
+          : p));
+
+        if (job.status === "done" && !finalizedJobsRef.current.has(job.id)) {
+          finalizedJobsRef.current.add(job.id);
+          const synthesis: any = job.synthesis;
+          if (synthesis) {
+            const legacyHash = pf.hash ? `[HASH:${pf.hash}]\n\n` : "";
+            const legacyContent = `${legacyHash}${synthesis.style_cache || ""}`;
+            try {
+              await onUpload(pf.name, legacyContent, "style");
+              await onSaveSynthesis(synthesis);
+              const patternCount = synthesis.patterns?.length || 0;
+              const chunksDone = job.chunks_completed || 0;
+              toast.success(`${pf.name}: ${patternCount} patterns extracted across ${chunksDone} chunks!`);
+              const contradictions: any = job.contradictions;
+              if (Array.isArray(contradictions) && contradictions.length > 0) {
+                toast.warning(`${contradictions.length} contradictions detected and resolved.`);
+              }
+            } catch (e: any) {
+              toast.error(`${pf.name}: save failed — ${e.message}`);
+            }
+          }
+          setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "done" } : p));
+          setTimeout(() => setPendingFiles(prev => prev.filter(p => p.id !== pf.id)), 4000);
+        } else if (job.status === "failed") {
+          setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "error", error: job.error || "Analysis failed" } : p));
+          toast.error(`${pf.name}: ${job.error || "Analysis failed"}`);
+        }
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [pendingFiles, onUpload, onSaveSynthesis]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;
@@ -143,54 +227,38 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
         return;
       }
 
-      // 3. Call structured analysis
-      setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, status: "analyzing" } : f));
+      // 3. Submit to background analysis job. The edge function returns
+      // immediately with a jobId; the polling effect above watches it.
+      setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, status: "analyzing", hash } : f));
 
       const bookTitle = file.name.replace(/\.[^.]+$/, "");
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       const resp = await fetch(ANALYZE_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${token}`,
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         },
-        body: JSON.stringify({ excerpts: fullText, bookTitle, mode: "structured" }),
+        body: JSON.stringify({ excerpts: fullText, bookTitle, mode: "structured", contentHash: hash }),
       });
 
-      if (!resp.ok) {
+      if (!resp.ok && resp.status !== 202) {
         const err = await resp.json().catch(() => ({ error: "Analysis failed" }));
         throw new Error(err.error || "Style analysis failed");
       }
 
       const data = await resp.json();
+      if (!data.jobId) throw new Error("No jobId returned");
 
-      if (!data.synthesis) {
-        throw new Error("No structured analysis returned");
-      }
-
-      setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, status: "synthesizing", chunksTotal: data.totalChunks, chunksCompleted: data.chunksAnalyzed } : f));
-
-      // 4. Save legacy style file for backward compat
-      const legacyContent = `[HASH:${hash}]\n\n${data.analysis || data.synthesis.style_cache || ""}`;
-      await onUpload(file.name, legacyContent, "style");
-
-      // 5. Save structured memory to DB
-      await onSaveSynthesis(data.synthesis);
-
-      setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, status: "done" } : f));
-      
-      const patternCount = data.synthesis.patterns?.length || 0;
-      toast.success(`${file.name}: ${patternCount} patterns extracted across ${data.chunksAnalyzed} chunks!`);
-
-      if (data.contradictions?.length > 0) {
-        toast.warning(`${data.contradictions.length} contradictions detected and resolved.`);
-      }
-
-      setTimeout(() => setPendingFiles(prev => prev.filter(f => f.id !== pendingId)), 4000);
+      setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, jobId: data.jobId, hash } : f));
     } catch (err: any) {
       setPendingFiles(prev => prev.map(f => f.id === pendingId ? { ...f, status: "error", error: err.message } : f));
       toast.error(`${file.name}: ${err.message || "Failed to process"}`);
     }
   };
+
 
   const activePatterns = stylePatterns.filter(p => p.confidence >= 0.40);
   const dormantPatterns = stylePatterns.filter(p => p.confidence < 0.40);
