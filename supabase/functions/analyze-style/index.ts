@@ -6,7 +6,11 @@ const corsHeaders = {
 };
 
 const API_URL = "https://api.mistral.ai/v1/chat/completions";
+// Always pin style analysis to Mistral Large (currently v3 = "mistral-large-latest").
+// Do NOT parametrize — style extraction quality is critical and must use the
+// strongest available model regardless of the user's chapter-generation model.
 const DEFAULT_MODEL = "mistral-large-latest";
+const CHUNK_CONCURRENCY = 4;
 
 // --- Chunking ---
 function chunkText(text: string, maxWordsPerChunk = 1500): string[] {
