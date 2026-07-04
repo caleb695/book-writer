@@ -6,7 +6,11 @@ const corsHeaders = {
 };
 
 const API_URL = "https://api.mistral.ai/v1/chat/completions";
+// Always pin style analysis to Mistral Large (currently v3 = "mistral-large-latest").
+// Do NOT parametrize — style extraction quality is critical and must use the
+// strongest available model regardless of the user's chapter-generation model.
 const DEFAULT_MODEL = "mistral-large-latest";
+const CHUNK_CONCURRENCY = 4;
 
 // --- Chunking ---
 function chunkText(text: string, maxWordsPerChunk = 1500): string[] {
@@ -298,19 +302,26 @@ serve(async (req) => {
     const chunks = chunkText(excerpts);
     console.log(`analyze-style: ${chunks.length} chunks from "${bookTitle}"`);
 
-    // Analyze each chunk
+    // Analyze chunks in parallel with a small concurrency window to cut
+    // latency roughly Nx for large books without hammering the rate limit.
     const chunkAnalyses: any[] = [];
-    for (let i = 0; i < chunks.length; i++) {
-      try {
-        const result = await analyzeChunk(chunks[i], i, chunks.length, bookTitle || "this book", MISTRAL_API_KEY, DEFAULT_MODEL);
-        chunkAnalyses.push(result);
-      } catch (e: any) {
-        if (e.message === "RATE_LIMITED") {
-          return jsonResponse({ error: "Rate limited. Please wait and try again.", partialResults: chunkAnalyses, completedChunks: i }, 429);
-        }
-        console.error(`Chunk ${i + 1} failed:`, e.message);
-        // Continue with remaining chunks — partial analysis is better than none
+    let rateLimited = false;
+    for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
+      const batch = chunks.slice(i, i + CHUNK_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map((c, j) =>
+          analyzeChunk(c, i + j, chunks.length, bookTitle || "this book", MISTRAL_API_KEY, DEFAULT_MODEL),
+        ),
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled") chunkAnalyses.push(r.value);
+        else if (r.reason?.message === "RATE_LIMITED") rateLimited = true;
+        else console.error("chunk failed:", r.reason?.message);
       }
+      if (rateLimited) break;
+    }
+    if (rateLimited && chunkAnalyses.length === 0) {
+      return jsonResponse({ error: "Rate limited. Please wait and try again." }, 429);
     }
 
     if (chunkAnalyses.length === 0) {
