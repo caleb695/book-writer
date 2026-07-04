@@ -323,15 +323,34 @@ try:
         downloaded = hf_hub_download(repo_id=REPO, filename=FILENAME, local_dir=WORK_DIR, local_dir_use_symlinks=False)
         MODEL_PATH = downloaded if os.path.exists(downloaded) else WORK_PATH
 
+    # Adaptive n_ctx: only allocate as much KV cache as this run actually needs.
+    # A tighter n_ctx makes model load MUCH faster (KV alloc + warmup shrink
+    # linearly) and leaves more VRAM headroom on T4. We keep the requested
+    # ceiling as an upper bound but shrink to prompt+output+slack when smaller.
+    try:
+        base_msgs_for_size = [
+            {'role': 'system', 'content': PROMPT['system']},
+            {'role': 'user', 'content': PROMPT['user']},
+        ]
+        approx_prompt_tokens = (len(PROMPT['system']) + len(PROMPT['user'])) // 3
+    except Exception:
+        approx_prompt_tokens = 4096
+    output_budget = min(int(PROMPT['max_tokens']) * 3, 12288)  # room for continuation
+    needed_ctx = approx_prompt_tokens + output_budget + 512
+    effective_ctx = max(4096, min(int(PROMPT['n_ctx']), ((needed_ctx + 1023) // 1024) * 1024))
+    print(f'LOOMINK_CTX requested={PROMPT["n_ctx"]} approx_prompt_tokens={approx_prompt_tokens} effective={effective_ctx}')
+
     llm = Llama(
         model_path=MODEL_PATH,
-        n_ctx=PROMPT['n_ctx'],
+        n_ctx=effective_ctx,
         n_gpu_layers=-1,
-        n_batch=1024,
+        # Bigger prefill batches → much faster prompt processing (T4 handles it).
+        n_batch=2048,
         n_ubatch=512,
         flash_attn=True,
         type_k=8,  # GGML_TYPE_Q8_0 — 8-bit K cache (halves KV RAM)
         type_v=8,  # GGML_TYPE_Q8_0 — 8-bit V cache (requires flash_attn)
+        offload_kqv=True,
         verbose=False,
     )
 
@@ -341,11 +360,11 @@ try:
     MP = float(PROMPT['min_p'])
 
     # Generation with automatic continuation when the model hits its output-token
-    # cap before finishing the chapter (finish_reason == 'length'). Each pass gets
-    # its own token budget; we stitch the pieces together and stop as soon as the
-    # model finishes naturally or we hit MAX_PASSES.
-    per_pass_budget = min(int(PROMPT['max_tokens']), 4096)
-    MAX_PASSES = 6
+    # cap before finishing the chapter (finish_reason == 'length'). We give the
+    # FIRST pass a large budget so most chapters finish in a single pass — every
+    # continuation pass re-processes the tail context, so fewer passes = faster.
+    per_pass_budget = min(int(PROMPT['max_tokens']) * 2, 8192)
+    MAX_PASSES = 4
     base_system = PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary. Do not invent any names, places, or facts not already established in the provided materials."
     base_user = PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}."
     full_chapter = ''

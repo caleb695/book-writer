@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -264,11 +265,120 @@ async function synthesizeChunks(
   return JSON.parse(toolCall.function.arguments);
 }
 
+// --- Background runner: does the chunk analysis + synthesis and writes
+// progress/result to the style_analysis_jobs row. Runs inside
+// EdgeRuntime.waitUntil so it survives after the HTTP response is sent.
+async function runStructured(
+  jobId: string,
+  excerpts: string,
+  bookTitle: string,
+  contentHash: string | null,
+  apiKey: string,
+  admin: ReturnType<typeof createClient>,
+) {
+  const update = (patch: Record<string, unknown>) =>
+    admin.from("style_analysis_jobs").update(patch).eq("id", jobId);
+
+  try {
+    const chunks = chunkText(excerpts);
+    console.log(`analyze-style[${jobId}]: ${chunks.length} chunks from "${bookTitle}"`);
+    await update({ chunks_total: chunks.length, chunks_completed: 0 });
+
+    const chunkAnalyses: any[] = [];
+    let rateLimited = false;
+    for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
+      const batch = chunks.slice(i, i + CHUNK_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map((c, j) =>
+          analyzeChunk(c, i + j, chunks.length, bookTitle, apiKey, DEFAULT_MODEL),
+        ),
+      );
+      for (const r of results) {
+        if (r.status === "fulfilled") chunkAnalyses.push(r.value);
+        else if ((r.reason as any)?.message === "RATE_LIMITED") rateLimited = true;
+        else console.error(`chunk failed:`, (r.reason as any)?.message);
+      }
+      await update({ chunks_completed: chunkAnalyses.length });
+      if (rateLimited) break;
+    }
+
+    if (chunkAnalyses.length === 0) {
+      await update({ status: "failed", error: rateLimited ? "Rate limited — please try again later" : "All chunk analyses failed" });
+      return;
+    }
+
+    let synthesis: any;
+    if (chunkAnalyses.length === 1) {
+      const single = chunkAnalyses[0];
+      synthesis = {
+        ...single,
+        genre_conventions: [],
+        style_cache: `Voice analysis for "${bookTitle}": ${single.detected_genre || "Unknown genre"}. ${single.patterns?.length || 0} patterns identified.`,
+      };
+      try {
+        synthesis = await synthesizeChunks(chunkAnalyses, bookTitle, apiKey, DEFAULT_MODEL);
+      } catch (e: any) {
+        console.error("Synthesis failed for single chunk, using raw:", e.message);
+      }
+    } else {
+      try {
+        synthesis = await synthesizeChunks(chunkAnalyses, bookTitle, apiKey, DEFAULT_MODEL);
+      } catch (e: any) {
+        console.error("Synthesis failed, merging manually:", e.message);
+        const allPatterns = chunkAnalyses.flatMap((a) => a.patterns || []);
+        synthesis = {
+          voice_profile: chunkAnalyses[0].voice_profile,
+          patterns: allPatterns,
+          thematic_fingerprint: chunkAnalyses[0].thematic_fingerprint,
+          detected_genre: chunkAnalyses[0].detected_genre,
+          genre_conventions: [],
+          style_cache: `Manually merged from ${chunkAnalyses.length} chunks. ${allPatterns.length} total patterns.`,
+        };
+      }
+    }
+
+    const patterns = synthesis.patterns || [];
+    const contradictions: string[] = [];
+    for (let i = 0; i < patterns.length; i++) {
+      for (let j = i + 1; j < patterns.length; j++) {
+        if (patterns[i].category === patterns[j].category) {
+          const textA = (patterns[i].pattern_text || "").toLowerCase();
+          const textB = (patterns[j].pattern_text || "").toLowerCase();
+          if (
+            (textA.includes("never") && textB.includes("always")) ||
+            (textA.includes("short") && textB.includes("long") && textA.includes("sentence") && textB.includes("sentence"))
+          ) {
+            contradictions.push(`Potential conflict: "${patterns[i].pattern_text}" vs "${patterns[j].pattern_text}"`);
+            patterns[i].confidence = Math.max(0.3, (patterns[i].confidence || 0.5) - 0.15);
+            patterns[j].confidence = Math.max(0.3, (patterns[j].confidence || 0.5) - 0.15);
+          }
+        }
+      }
+    }
+    for (const p of patterns) {
+      if (p.confidence >= 0.95) p.locked = true;
+    }
+
+    await update({
+      status: "done",
+      synthesis,
+      contradictions,
+      content_hash: contentHash,
+      chunks_completed: chunkAnalyses.length,
+      chunks_total: chunks.length,
+    });
+    console.log(`analyze-style[${jobId}]: done (${chunkAnalyses.length}/${chunks.length} chunks)`);
+  } catch (e) {
+    console.error(`analyze-style[${jobId}] failed:`, e);
+    await update({ status: "failed", error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { excerpts, bookTitle, mode } = await req.json();
+    const { excerpts, bookTitle, mode, contentHash } = await req.json();
     const MISTRAL_API_KEY = Deno.env.get("MISTRAL_API_KEY");
     if (!MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY is not configured");
 
@@ -276,7 +386,7 @@ serve(async (req) => {
       return jsonResponse({ error: "Not enough text to analyze" }, 400);
     }
 
-    // Mode "legacy" returns plain text analysis for backward compat
+    // Legacy synchronous plain-text mode (kept for backward compat).
     if (mode === "legacy") {
       const systemPrompt = `You are an expert literary analyst. Analyze the writing style and produce a comprehensive style guide covering sentence structure, vocabulary, narrative voice, tone, dialogue style, description style, pacing, POV handling, and distinctive quirks. Be detailed and objective.`;
       const response = await fetch(API_URL, {
@@ -298,111 +408,55 @@ serve(async (req) => {
       return jsonResponse({ analysis: data.choices?.[0]?.message?.content || "" }, 200);
     }
 
-    // --- Structured analysis mode ---
-    const chunks = chunkText(excerpts);
-    console.log(`analyze-style: ${chunks.length} chunks from "${bookTitle}"`);
+    // --- Structured async mode: create a job row and kick off background work.
+    // The HTTP response returns instantly with { jobId }; the client polls the
+    // style_analysis_jobs table. This survives tab switches and app exits.
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const authHeader = req.headers.get("Authorization") || "";
+    const jwt = authHeader.replace(/^Bearer\s+/i, "");
+    if (!jwt) return jsonResponse({ error: "Missing Authorization" }, 401);
 
-    // Analyze chunks in parallel with a small concurrency window to cut
-    // latency roughly Nx for large books without hammering the rate limit.
-    const chunkAnalyses: any[] = [];
-    let rateLimited = false;
-    for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
-      const batch = chunks.slice(i, i + CHUNK_CONCURRENCY);
-      const results = await Promise.allSettled(
-        batch.map((c, j) =>
-          analyzeChunk(c, i + j, chunks.length, bookTitle || "this book", MISTRAL_API_KEY, DEFAULT_MODEL),
-        ),
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled") chunkAnalyses.push(r.value);
-        else if (r.reason?.message === "RATE_LIMITED") rateLimited = true;
-        else console.error("chunk failed:", r.reason?.message);
-      }
-      if (rateLimited) break;
-    }
-    if (rateLimited && chunkAnalyses.length === 0) {
-      return jsonResponse({ error: "Rate limited. Please wait and try again." }, 429);
-    }
+    // Resolve the caller so we can attribute the job to their user_id.
+    const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: `Bearer ${jwt}` } },
+    });
+    const { data: userRes, error: userErr } = await userClient.auth.getUser();
+    if (userErr || !userRes?.user) return jsonResponse({ error: "Unauthorized" }, 401);
 
-    if (chunkAnalyses.length === 0) {
-      return jsonResponse({ error: "All chunk analyses failed" }, 500);
-    }
+    const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // Synthesize if multiple chunks, otherwise use the single result directly
-    let synthesis: any;
-    if (chunkAnalyses.length === 1) {
-      // Single chunk — wrap it in synthesis format
-      const single = chunkAnalyses[0];
-      synthesis = {
-        ...single,
-        genre_conventions: [],
-        style_cache: `Voice analysis for "${bookTitle}": ${single.detected_genre || "Unknown genre"}. ${single.patterns?.length || 0} patterns identified.`,
-      };
-      // Still do a quick synthesis to get genre conventions and style_cache
-      try {
-        synthesis = await synthesizeChunks(chunkAnalyses, bookTitle || "this book", MISTRAL_API_KEY, DEFAULT_MODEL);
-      } catch (e: any) {
-        console.error("Synthesis failed for single chunk, using raw:", e.message);
-      }
-    } else {
-      try {
-        synthesis = await synthesizeChunks(chunkAnalyses, bookTitle || "this book", MISTRAL_API_KEY, DEFAULT_MODEL);
-      } catch (e: any) {
-        if (e.message === "RATE_LIMITED") {
-          return jsonResponse({ error: "Rate limited during synthesis. Please try again.", partialResults: chunkAnalyses }, 429);
-        }
-        // Fallback: merge manually
-        console.error("Synthesis failed, merging manually:", e.message);
-        const allPatterns = chunkAnalyses.flatMap(a => a.patterns || []);
-        synthesis = {
-          voice_profile: chunkAnalyses[0].voice_profile,
-          patterns: allPatterns,
-          thematic_fingerprint: chunkAnalyses[0].thematic_fingerprint,
-          detected_genre: chunkAnalyses[0].detected_genre,
-          genre_conventions: [],
-          style_cache: `Manually merged from ${chunkAnalyses.length} chunks. ${allPatterns.length} total patterns.`,
-        };
-      }
+    const { data: job, error: jobErr } = await admin
+      .from("style_analysis_jobs")
+      .insert({
+        user_id: userRes.user.id,
+        file_name: String(bookTitle || "Untitled"),
+        status: "running",
+        content_hash: typeof contentHash === "string" ? contentHash : null,
+      })
+      .select("id")
+      .single();
+    if (jobErr || !job) {
+      console.error("Failed to create style_analysis_jobs row:", jobErr);
+      return jsonResponse({ error: "Failed to start analysis job" }, 500);
     }
 
-    // Check patterns for contradictions before returning
-    const patterns = synthesis.patterns || [];
-    const contradictions: string[] = [];
-    for (let i = 0; i < patterns.length; i++) {
-      for (let j = i + 1; j < patterns.length; j++) {
-        // Simple heuristic: same category patterns with very different meanings
-        if (patterns[i].category === patterns[j].category) {
-          const textA = (patterns[i].pattern_text || "").toLowerCase();
-          const textB = (patterns[j].pattern_text || "").toLowerCase();
-          // Flag obvious contradictions (contains negation of the other)
-          if (
-            (textA.includes("never") && textB.includes("always") && patterns[i].category === patterns[j].category) ||
-            (textA.includes("short") && textB.includes("long") && textA.includes("sentence") && textB.includes("sentence"))
-          ) {
-            contradictions.push(`Potential conflict: "${patterns[i].pattern_text}" vs "${patterns[j].pattern_text}"`);
-            // Lower confidence on both
-            patterns[i].confidence = Math.max(0.3, (patterns[i].confidence || 0.5) - 0.15);
-            patterns[j].confidence = Math.max(0.3, (patterns[j].confidence || 0.5) - 0.15);
-          }
-        }
-      }
-    }
+    // @ts-ignore — EdgeRuntime is a Deno Deploy global.
+    EdgeRuntime.waitUntil(
+      runStructured(
+        job.id,
+        String(excerpts),
+        String(bookTitle || "this book"),
+        typeof contentHash === "string" ? contentHash : null,
+        MISTRAL_API_KEY,
+        admin,
+      ),
+    );
 
-    // Lock patterns above 0.95
-    for (const p of patterns) {
-      if (p.confidence >= 0.95) p.locked = true;
-    }
-
-    return jsonResponse({
-      synthesis,
-      chunksAnalyzed: chunkAnalyses.length,
-      totalChunks: chunks.length,
-      contradictions,
-      // Also return legacy-compatible analysis text
-      analysis: synthesis.style_cache || "",
-    }, 200);
+    return jsonResponse({ jobId: job.id, status: "running" }, 202);
   } catch (e) {
     console.error("analyze-style error:", e);
     return jsonResponse({ error: e instanceof Error ? e.message : "Unknown error" }, 500);
   }
 });
+
