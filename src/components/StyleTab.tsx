@@ -70,12 +70,15 @@ async function hashContent(text: string): Promise<string> {
 }
 
 interface PendingFile {
-  id: string;
+  id: string;         // local UI id
+  jobId?: string;     // DB style_analysis_jobs.id once created
   name: string;
   status: "extracting" | "analyzing" | "synthesizing" | "done" | "error" | "duplicate";
   error?: string;
   chunksTotal?: number;
   chunksCompleted?: number;
+  hash?: string;      // set once extraction+hash is done
+  fullText?: string;  // kept in memory for legacy file save on completion
 }
 
 const CONFIDENCE_LABELS: Record<string, { label: string; color: string }> = {
