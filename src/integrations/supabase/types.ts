@@ -407,6 +407,51 @@ export type Database = {
         }
         Relationships: []
       }
+      style_analysis_jobs: {
+        Row: {
+          chunks_completed: number
+          chunks_total: number
+          content_hash: string | null
+          contradictions: Json | null
+          created_at: string
+          error: string | null
+          file_name: string
+          id: string
+          status: string
+          synthesis: Json | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          chunks_completed?: number
+          chunks_total?: number
+          content_hash?: string | null
+          contradictions?: Json | null
+          created_at?: string
+          error?: string | null
+          file_name: string
+          id?: string
+          status?: string
+          synthesis?: Json | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          chunks_completed?: number
+          chunks_total?: number
+          content_hash?: string | null
+          contradictions?: Json | null
+          created_at?: string
+          error?: string | null
+          file_name?: string
+          id?: string
+          status?: string
+          synthesis?: Json | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       style_memory: {
         Row: {
           created_at: string
