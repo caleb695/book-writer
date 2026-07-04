@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Upload, X, FileText, Loader2, Sparkles, BookOpen, CheckCircle2, Shield, ShieldAlert, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import * as pdfjsLib from "pdfjs-dist";
 import mammoth from "mammoth";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import type { UploadedFile } from "@/hooks/useProject";
 import type { StylePattern, StyleMemory } from "@/hooks/useStyleMemory";
 
