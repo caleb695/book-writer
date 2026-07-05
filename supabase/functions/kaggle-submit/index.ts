@@ -245,14 +245,15 @@ HUMAN VOICE (write like a real novelist, not an AI):
 }
 
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null, enableThinking: boolean, chapterNumber: number): string {
   const code = `
 import json, os, sys, shutil, glob, traceback, subprocess, re
 WORK_DIR = '/kaggle/working/models'
 PKG_CACHE = '/kaggle/working/pkgcache'
 os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(PKG_CACHE, exist_ok=True)
-PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, min_p: minP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
+PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, min_p: minP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax, enable_thinking: enableThinking, chapter_number: chapterNumber }))})
+
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
 SLUG = ${JSON.stringify(slug)}
