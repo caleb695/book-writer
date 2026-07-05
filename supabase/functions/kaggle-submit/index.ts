@@ -149,22 +149,31 @@ function extractRelevantOutline(outline: string, chapterNumber: number): string 
 function buildPrompts(body: Record<string, unknown>) {
   const chapterNumber = Number.isFinite(Number(body.chapterNumber)) ? Number(body.chapterNumber) : 1;
   const outline = extractRelevantOutline(String(body.outline || ""), chapterNumber);
-  const contextBooks = compressCollection(body.contextBooks, 20_000, 10_000);
-  const previousChapters = takeTail(String(body.previousChapters || ""), 16_000);
-  const fullManuscript = sampleLongText(String(body.fullManuscript || ""), 40_000);
-  const partialContent = takeTail(String(body.partialContent || ""), 8_000);
+  // Speed pass: tighter caps on every context slice. Prefill time scales
+  // linearly with prompt tokens, so trimming these has an outsized effect on
+  // time-to-first-token on Kaggle T4.
+  const contextBooks = compressCollection(body.contextBooks, 8_000, 4_000);
+  const previousChapters = takeTail(String(body.previousChapters || ""), 8_000);
+  const fullManuscript = sampleLongText(String(body.fullManuscript || ""), 15_000);
+  const partialContent = takeTail(String(body.partialContent || ""), 6_000);
   const rewriteNotes = normalizeText(body.rewriteNotes);
   const wordCountInstruction = normalizeText(body.wordCountInstruction);
   const perspective = normalizeText(body.perspective);
   const fictionType = normalizeText(body.fictionType);
-  const styleGuides = compressCollection(body.styleGuides, 18_000, 9_000).join("\n\n---\n\n");
+  const customStylePrompt = normalizeText(body.customStylePrompt);
+  const styleGuides = customStylePrompt
+    ? "" // custom prompt overrides raw style guide dumps
+    : compressCollection(body.styleGuides, 6_000, 3_000).join("\n\n---\n\n");
   const ultraContextInjection = normalizeText(body.ultraContextInjection);
   const checklist = Array.isArray(body.checklist) ? body.checklist : [];
-  const checklistText = checklist
-    .slice(0, 20)
-    .map((item: any) => `- ${item?.q || ""}`)
-    .filter(Boolean)
-    .join("\n");
+  const checklistText = customStylePrompt
+    ? "" // custom prompt already encodes the desired style rules
+    : checklist
+      .slice(0, 20)
+      .map((item: any) => `- ${item?.q || ""}`)
+      .filter(Boolean)
+      .join("\n");
+  const enableThinking = body.enableThinking !== false; // default true
 
   if (!outline) throw new Error("Outline is required");
 
@@ -204,11 +213,19 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (perspective) system += `\n- Write every sentence in ${perspective} perspective.`;
   if (fictionType) system += `\n- Match the conventions, pacing, tone, and dialogue style of ${fictionType}.`;
   if (wordCountInstruction) system += `\n- ${wordCountInstruction}`;
-  if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
-  if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
+  if (customStylePrompt) {
+    system += `\n\nUSER STYLE OVERRIDE (this is the definitive style guide, follow it above any generic advice above):\n${customStylePrompt}`;
+  } else {
+    if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
+    if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
+  }
   if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
 
-  const draftContexts = compressCollection(body.draftContexts, 12_000, 8_000);
+  if (!enableThinking) {
+    system += `\n\nOUTPUT MODE: Do NOT use internal reasoning tags (no <think>, no </think>, no chain-of-thought, no planning aloud). Output ONLY the finished chapter prose starting with the chapter heading. Any thinking must be silent.`;
+  }
+
+  const draftContexts = compressCollection(body.draftContexts, 6_000, 4_000);
 
   let user = "";
   if (contextBooks.length > 0) user += `REFERENCE MATERIALS:\n\n${contextBooks.join("\n\n---\n\n")}\n\n`;
@@ -224,8 +241,9 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (rewriteNotes) user += `\n\nRewrite instructions: ${rewriteNotes}`;
   user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity. Do NOT invent any names, places, or facts that are not already established above.`;
 
-  return { system, user };
+  return { system, user, enableThinking, chapterNumber };
 }
+
 
 function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
   const code = `
