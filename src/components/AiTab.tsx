@@ -1163,6 +1163,29 @@ const AiTab = ({
         </div>
       </div>
 
+      {/* Thinking toggle — only shown when the selected model supports internal reasoning */}
+      {(() => {
+        const m = AI_MODELS.find(x => x.id === aiSettings.model);
+        if (!m?.supportsThinking) return null;
+        return (
+          <div className="flex items-center justify-between rounded-md border border-border p-3">
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-foreground">Thinking mode</span>
+              <span className="text-[10px] text-muted-foreground">Let {m.label} use internal &lt;think&gt; reasoning before writing.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onUpdateAiSettings({ thinking_enabled: !aiSettings.thinking_enabled })}
+              className={`relative h-5 w-9 rounded-full transition-colors ${aiSettings.thinking_enabled ? "bg-primary" : "bg-muted"}`}
+              aria-pressed={aiSettings.thinking_enabled}
+            >
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-background transition-transform ${aiSettings.thinking_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+          </div>
+        );
+      })()}
+
+
       {/* Temperature slider */}
       <div className="space-y-3">
         <span className="text-xs text-muted-foreground font-medium">Temperature</span>
