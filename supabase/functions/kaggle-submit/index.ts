@@ -516,7 +516,7 @@ serve(async (req) => {
     const runtime = MODEL_RUNTIME[modelId];
     if (!runtime) return json({ error: `Unknown Kaggle model: ${modelId}` }, 400);
 
-    const { system, user } = buildPrompts(body as Record<string, unknown>);
+    const { system, user, enableThinking, chapterNumber } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
