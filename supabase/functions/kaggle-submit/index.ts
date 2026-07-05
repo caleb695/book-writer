@@ -537,7 +537,7 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId] || null;
     const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug, enableThinking, chapterNumber);
 
     const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const sources: string[] = [];
