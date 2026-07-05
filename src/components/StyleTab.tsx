@@ -97,15 +97,60 @@ function getConfidenceLevel(p: StylePattern) {
   return "dormant";
 }
 
-const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis }: StyleTabProps) => {
+const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt }: StyleTabProps) => {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [showPatterns, setShowPatterns] = useState(true);
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [savingPrompt, setSavingPrompt] = useState(false);
   const finalizedJobsRef = useRef<Set<string>>(new Set());
 
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
+
+  // Build a plain-text default prompt from the current memory + patterns.
+  const buildDefaultPrompt = useCallback(() => {
+    const parts: string[] = [];
+    if (styleMemory?.style_cache) parts.push(styleMemory.style_cache.trim());
+    if (styleMemory?.detected_genre) parts.push(`Genre: ${styleMemory.detected_genre}.`);
+    const activePatternsAll = stylePatterns.filter(p => p.confidence >= 0.4);
+    if (activePatternsAll.length > 0) {
+      parts.push(
+        "Patterns to follow: " +
+          activePatternsAll.map(p => p.pattern_text.trim().replace(/\s+/g, " ")).join(" ") +
+          "."
+      );
+    }
+    const conventions = styleMemory?.genre_conventions ?? [];
+    if (conventions.length > 0) {
+      parts.push("Genre conventions: " + conventions.map(g => g.convention).join("; ") + ".");
+    }
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  }, [styleMemory, stylePatterns]);
+
+  const openPromptEditor = () => {
+    const initial = (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt();
+    setPromptDraft(initial);
+    setPromptEditorOpen(true);
+  };
+
+  const savePrompt = async () => {
+    setSavingPrompt(true);
+    try {
+      await onUpdateCustomPrompt(promptDraft.trim() || null);
+      toast.success(promptDraft.trim() ? "Custom style prompt saved" : "Reverted to auto style prompt");
+      setPromptEditorOpen(false);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save prompt");
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+
+  const resetPrompt = () => setPromptDraft(buildDefaultPrompt());
+
 
   // Resume any in-flight analysis jobs from the DB when the tab (re)mounts.
   // This is what makes analysis truly background: even after leaving the app
