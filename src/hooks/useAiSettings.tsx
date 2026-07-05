@@ -214,7 +214,9 @@ export function useAiSettings() {
           word_count_min: Number(data.word_count_min) || DEFAULTS.word_count_min,
           word_count_max: Number(data.word_count_max) || DEFAULTS.word_count_max,
           brainstorm_model: data.brainstorm_model || DEFAULTS.brainstorm_model,
+          thinking_enabled: data.thinking_enabled ?? DEFAULTS.thinking_enabled,
         });
+
       }
       setLoading(false);
     };
