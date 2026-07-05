@@ -23,7 +23,9 @@ export interface StyleMemory {
   genre_conventions: Array<{ convention: string; checklist_question: string }>;
   style_cache: string;
   last_recached_at: string | null;
+  custom_prompt: string | null;
 }
+
 
 export interface GoldenExample {
   id: string;
@@ -441,6 +443,27 @@ export function useStyleMemory() {
       }));
   }, [patterns]);
 
+  // Save/clear the user-editable custom style prompt (overrides auto guide)
+  const updateCustomPrompt = useCallback(async (text: string | null) => {
+    if (!user) return;
+    const value = text && text.trim() ? text.trim() : null;
+    const { data: existing } = await supabase
+      .from("style_memory")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (existing) {
+      await (supabase as any).from("style_memory").update({ custom_prompt: value }).eq("id", existing.id);
+      setMemory(prev => prev ? { ...prev, custom_prompt: value } : prev);
+    } else {
+      const { data } = await (supabase as any).from("style_memory").insert({
+        user_id: user.id, custom_prompt: value, voice_profile: {}, thematic_fingerprint: {},
+        genre_conventions: [], style_cache: "",
+      }).select().single();
+      if (data) setMemory(data as any);
+    }
+  }, [user]);
+
   return {
     memory,
     patterns,
@@ -453,5 +476,7 @@ export function useStyleMemory() {
     decayPatterns,
     getInjectionPatterns,
     getChecklist,
+    updateCustomPrompt,
   };
+
 }

@@ -27,7 +27,10 @@ export const KAGGLE_RUNNER_SLUGS: Record<string, string> = {
   "kaggle/fallenmerick-mn-violet-lotus-12b": "fallenmerick-mn-violet-lotus-12b",
   "kaggle/davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus",
   "kaggle/davidau-llama-3-2-8x3b-moe-dark-champion": "davidau-llama-3-2-8x3b-moe-dark-champion-instruct",
+  "kaggle/nanovel-27b": "nanovel-27b",
+  "kaggle/the-creative-wordsmith-31b": "the-creative-wordsmith-31b",
 };
+
 
 export const kaggleRunnerUrl = (modelId: string) => {
   const slug = KAGGLE_RUNNER_SLUGS[modelId];

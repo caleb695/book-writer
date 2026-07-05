@@ -675,19 +675,19 @@ const AiTab = ({
         fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
         partialContent,
         styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
+        customStylePrompt: styleMemory?.custom_prompt || undefined,
         structuredMemory: structuredMemoryPayload,
         checklist: checklistPayload,
         ultraContextInjection: ultraContextInjection || undefined,
         model: activeModel,
         temperature: aiSettings.temperature,
-        // The "top_p" slider is now repurposed as min_p (see UI). Kaggle uses
-        // min_p natively; non-Kaggle providers still receive top_p clamped to
-        // its valid 0-1 range for backward compatibility.
         minP: aiSettings.top_p,
         min_p: aiSettings.top_p,
         top_p: Math.min(1, Math.max(0, aiSettings.top_p)),
         contextWindow: ctx,
+        enableThinking: aiSettings.thinking_enabled,
       };
+
 
       const polishParams = {
         rewrite: !!rewrite,
@@ -1162,6 +1162,29 @@ const AiTab = ({
           )}
         </div>
       </div>
+
+      {/* Thinking toggle — only shown when the selected model supports internal reasoning */}
+      {(() => {
+        const m = AI_MODELS.find(x => x.id === aiSettings.model);
+        if (!m?.supportsThinking) return null;
+        return (
+          <div className="flex items-center justify-between rounded-md border border-border p-3">
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-foreground">Thinking mode</span>
+              <span className="text-[10px] text-muted-foreground">Let {m.label} use internal &lt;think&gt; reasoning before writing.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onUpdateAiSettings({ thinking_enabled: !aiSettings.thinking_enabled })}
+              className={`relative h-5 w-9 rounded-full transition-colors ${aiSettings.thinking_enabled ? "bg-primary" : "bg-muted"}`}
+              aria-pressed={aiSettings.thinking_enabled}
+            >
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-background transition-transform ${aiSettings.thinking_enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+          </div>
+        );
+      })()}
+
 
       {/* Temperature slider */}
       <div className="space-y-3">

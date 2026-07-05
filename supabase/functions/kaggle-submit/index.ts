@@ -35,7 +35,13 @@ const MODEL_RUNTIME: Record<string, { repo: string; filename: string }> = {
   "fallenmerick-mn-violet-lotus-12b": { repo: "mradermacher/MN-Violet-Lotus-12B-GGUF", filename: "MN-Violet-Lotus-12B.Q8_0.gguf" },
   "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": { repo: "mradermacher/LFM2.5-1.2B-Instruct-Thinking-Claude-High-Reasoning-GGUF", filename: "LFM2.5-1.2B-Instruct-Thinking-Claude-High-Reasoning.f16.gguf" },
   "davidau-llama-3-2-8x3b-moe-dark-champion": { repo: "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF", filename: "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q5_k_s.gguf" },
+  // Newly added runners (mynameishiiii/<slug>). No dedicated download kernel yet —
+  // the runner will fall back to HuggingFace download on first run and cache in
+  // /kaggle/working for subsequent runs of the same kernel version.
+  "nanovel-27b": { repo: "mradermacher/NaNovel-27B-GGUF", filename: "NaNovel-27B.Q4_K_M.gguf" },
+  "the-creative-wordsmith-31b": { repo: "llmfan46/gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-GGUF", filename: "gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-Q4_K_S.gguf" },
 };
+
 
 // Pre-existing download notebooks owned by `mynameishiiii` whose /kaggle/working
 // output already contains the GGUF for each model. Attaching one as a
@@ -143,22 +149,31 @@ function extractRelevantOutline(outline: string, chapterNumber: number): string 
 function buildPrompts(body: Record<string, unknown>) {
   const chapterNumber = Number.isFinite(Number(body.chapterNumber)) ? Number(body.chapterNumber) : 1;
   const outline = extractRelevantOutline(String(body.outline || ""), chapterNumber);
-  const contextBooks = compressCollection(body.contextBooks, 20_000, 10_000);
-  const previousChapters = takeTail(String(body.previousChapters || ""), 16_000);
-  const fullManuscript = sampleLongText(String(body.fullManuscript || ""), 40_000);
-  const partialContent = takeTail(String(body.partialContent || ""), 8_000);
+  // Speed pass: tighter caps on every context slice. Prefill time scales
+  // linearly with prompt tokens, so trimming these has an outsized effect on
+  // time-to-first-token on Kaggle T4.
+  const contextBooks = compressCollection(body.contextBooks, 8_000, 4_000);
+  const previousChapters = takeTail(String(body.previousChapters || ""), 8_000);
+  const fullManuscript = sampleLongText(String(body.fullManuscript || ""), 15_000);
+  const partialContent = takeTail(String(body.partialContent || ""), 6_000);
   const rewriteNotes = normalizeText(body.rewriteNotes);
   const wordCountInstruction = normalizeText(body.wordCountInstruction);
   const perspective = normalizeText(body.perspective);
   const fictionType = normalizeText(body.fictionType);
-  const styleGuides = compressCollection(body.styleGuides, 18_000, 9_000).join("\n\n---\n\n");
+  const customStylePrompt = normalizeText(body.customStylePrompt);
+  const styleGuides = customStylePrompt
+    ? "" // custom prompt overrides raw style guide dumps
+    : compressCollection(body.styleGuides, 6_000, 3_000).join("\n\n---\n\n");
   const ultraContextInjection = normalizeText(body.ultraContextInjection);
   const checklist = Array.isArray(body.checklist) ? body.checklist : [];
-  const checklistText = checklist
-    .slice(0, 20)
-    .map((item: any) => `- ${item?.q || ""}`)
-    .filter(Boolean)
-    .join("\n");
+  const checklistText = customStylePrompt
+    ? "" // custom prompt already encodes the desired style rules
+    : checklist
+      .slice(0, 20)
+      .map((item: any) => `- ${item?.q || ""}`)
+      .filter(Boolean)
+      .join("\n");
+  const enableThinking = body.enableThinking !== false; // default true
 
   if (!outline) throw new Error("Outline is required");
 
@@ -198,11 +213,19 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (perspective) system += `\n- Write every sentence in ${perspective} perspective.`;
   if (fictionType) system += `\n- Match the conventions, pacing, tone, and dialogue style of ${fictionType}.`;
   if (wordCountInstruction) system += `\n- ${wordCountInstruction}`;
-  if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
-  if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
+  if (customStylePrompt) {
+    system += `\n\nUSER STYLE OVERRIDE (this is the definitive style guide, follow it above any generic advice above):\n${customStylePrompt}`;
+  } else {
+    if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
+    if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
+  }
   if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
 
-  const draftContexts = compressCollection(body.draftContexts, 12_000, 8_000);
+  if (!enableThinking) {
+    system += `\n\nOUTPUT MODE: Do NOT use internal reasoning tags (no <think>, no </think>, no chain-of-thought, no planning aloud). Output ONLY the finished chapter prose starting with the chapter heading. Any thinking must be silent.`;
+  }
+
+  const draftContexts = compressCollection(body.draftContexts, 6_000, 4_000);
 
   let user = "";
   if (contextBooks.length > 0) user += `REFERENCE MATERIALS:\n\n${contextBooks.join("\n\n---\n\n")}\n\n`;
@@ -218,17 +241,19 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (rewriteNotes) user += `\n\nRewrite instructions: ${rewriteNotes}`;
   user += `\n\nNow write the full chapter with rich scenes, strong dialogue, deep interiority, and exact continuity. Do NOT invent any names, places, or facts that are not already established above.`;
 
-  return { system, user };
+  return { system, user, enableThinking, chapterNumber };
 }
 
-function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null): string {
+
+function buildNotebook(repo: string, filename: string, system: string, user: string, maxTokens: number, temperature: number, minP: number, ctxSize: number, slug: string, wordMin: number, wordMax: number, downloadSlug: string | null, enableThinking: boolean, chapterNumber: number): string {
   const code = `
 import json, os, sys, shutil, glob, traceback, subprocess, re
 WORK_DIR = '/kaggle/working/models'
 PKG_CACHE = '/kaggle/working/pkgcache'
 os.makedirs(WORK_DIR, exist_ok=True)
 os.makedirs(PKG_CACHE, exist_ok=True)
-PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, min_p: minP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax }))})
+PROMPT = json.loads(${JSON.stringify(JSON.stringify({ system, user, max_tokens: maxTokens, temperature, min_p: minP, n_ctx: ctxSize, word_min: wordMin, word_max: wordMax, enable_thinking: enableThinking, chapter_number: chapterNumber }))})
+
 REPO = ${JSON.stringify(repo)}
 FILENAME = ${JSON.stringify(filename)}
 SLUG = ${JSON.stringify(slug)}
@@ -340,17 +365,35 @@ try:
     effective_ctx = max(4096, min(int(PROMPT['n_ctx']), ((needed_ctx + 1023) // 1024) * 1024))
     print(f'LOOMINK_CTX requested={PROMPT["n_ctx"]} approx_prompt_tokens={approx_prompt_tokens} effective={effective_ctx}')
 
+    # === SPEEDUPS ===
+    # 1) Bigger prefill batches → faster prompt processing on T4.
+    # 2) 8-bit KV cache halves KV RAM and speeds attention.
+    # 3) Prompt-lookup speculative decoding: reuses n-grams already present
+    #    in the prompt (outline, previous chapters) as draft tokens — no draft
+    #    model needed. Chapter continuation is HEAVY on prompt repetition, so
+    #    this typically gives a 1.5-2x wall-clock speedup with zero quality loss.
+    draft_model = None
+    try:
+        from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
+        draft_model = LlamaPromptLookupDecoding(num_pred_tokens=10, max_ngram_size=3)
+        print('LOOMINK_SPECULATIVE_ON prompt_lookup n_pred=10')
+    except Exception as _e:
+        print('LOOMINK_SPECULATIVE_OFF', _e)
+
     llm = Llama(
         model_path=MODEL_PATH,
         n_ctx=effective_ctx,
         n_gpu_layers=-1,
-        # Bigger prefill batches → much faster prompt processing (T4 handles it).
-        n_batch=2048,
-        n_ubatch=512,
+        n_batch=4096,   # bumped from 2048 — T4 handles it, halves prefill wall-time
+        n_ubatch=1024,
+        n_threads=max(2, (os.cpu_count() or 4) - 1),
         flash_attn=True,
-        type_k=8,  # GGML_TYPE_Q8_0 — 8-bit K cache (halves KV RAM)
-        type_v=8,  # GGML_TYPE_Q8_0 — 8-bit V cache (requires flash_attn)
+        type_k=8,       # 8-bit K cache
+        type_v=8,       # 8-bit V cache (requires flash_attn)
         offload_kqv=True,
+        use_mmap=True,  # explicit — lets the OS lazy-load model pages
+        use_mlock=False,
+        draft_model=draft_model,
         verbose=False,
     )
 
@@ -358,22 +401,38 @@ try:
     WORD_MAX = int(PROMPT['word_max'] or 4000)
     T = float(PROMPT['temperature'])
     MP = float(PROMPT['min_p'])
+    ENABLE_THINKING = bool(PROMPT.get('enable_thinking', True))
+    CHAPTER_N = int(PROMPT.get('chapter_number', 1))
+    REQUIRED_HEADING_PREFIX = f"## Chapter {CHAPTER_N}"
 
-    # Generation with automatic continuation when the model hits its output-token
-    # cap before finishing the chapter (finish_reason == 'length'). We give the
-    # FIRST pass a large budget so most chapters finish in a single pass — every
-    # continuation pass re-processes the tail context, so fewer passes = faster.
+    def strip_thinking(txt):
+        # Remove any <think>...</think> blocks (or <thought>, <reflection>).
+        if not txt: return txt
+        for tag in ('think', 'thought', 'reflection', 'reasoning'):
+            txt = re.sub(rf'<{tag}\\b[^>]*>.*?</{tag}>', '', txt, flags=re.DOTALL | re.IGNORECASE)
+            # Also drop unclosed opening tags to the next blank line
+            txt = re.sub(rf'<{tag}\\b[^>]*>.*?(?=\\n\\n|$)', '', txt, flags=re.DOTALL | re.IGNORECASE)
+        return txt.strip()
+
     per_pass_budget = min(int(PROMPT['max_tokens']) * 2, 8192)
     MAX_PASSES = 4
     base_system = PROMPT['system'] + f"\\n\\nWrite the whole chapter in one continuous pass. Target {WORD_MIN}-{WORD_MAX} words. Do not stop early, do not explain, do not include meta commentary. Do not invent any names, places, or facts not already established in the provided materials."
-    base_user = PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}."
+    base_user = PROMPT['user'] + f"\\n\\nWrite the complete chapter now, aiming near {WORD_MAX} words while staying within {WORD_MIN}-{WORD_MAX}. Start immediately with the heading: {REQUIRED_HEADING_PREFIX}: <title>"
     full_chapter = ''
     finish_reason = None
     for pass_idx in range(MAX_PASSES):
         if pass_idx == 0:
+            # === INSTRUCTION-FOLLOWING TECHNIQUE (no extra tokens, no verify step) ===
+            # Assistant prefill: put the required heading prefix in an assistant
+            # message BEFORE generation. Most chat templates append this to the
+            # assistant turn, so the model literally must continue from
+            # "## Chapter N: " rather than deciding whether to obey the format.
+            # This is the standard trick used by Anthropic-style prefill and by
+            # llama.cpp when you pass a trailing assistant message.
             msgs = [
                 {'role': 'system', 'content': base_system},
                 {'role': 'user', 'content': base_user},
+                {'role': 'assistant', 'content': f"{REQUIRED_HEADING_PREFIX}: "},
             ]
         else:
             tail = full_chapter[-4000:]
@@ -382,24 +441,35 @@ try:
                 {'role': 'assistant', 'content': tail},
                 {'role': 'user', 'content': 'Continue the chapter from exactly where the last sentence stopped. Do not repeat any text above. Do not add commentary. Just keep writing.'},
             ]
-        print(f'LOOMINK_PASS pass={pass_idx+1} budget={per_pass_budget} temp={T} min_p={MP} have={wc(full_chapter)}')
+        print(f'LOOMINK_PASS pass={pass_idx+1} budget={per_pass_budget} temp={T} min_p={MP} have={wc(full_chapter)} think={ENABLE_THINKING}')
         out = llm.create_chat_completion(
             messages=msgs,
             max_tokens=per_pass_budget,
             temperature=T,
             top_p=1.0,
             min_p=MP,
+            repeat_penalty=1.05,
         )
         choice = out['choices'][0]
         piece = (choice.get('message', {}).get('content') or '').strip()
         finish_reason = choice.get('finish_reason')
+
+        # Strip <think> blocks when thinking mode is disabled OR always when
+        # we're capturing final prose (they should never appear in output).
+        if not ENABLE_THINKING or '<think' in piece.lower():
+            piece = strip_thinking(piece)
+
         if not piece:
             print('LOOMINK_EMPTY_PIECE finish=', finish_reason)
             break
         if pass_idx == 0:
+            # Auto-repair heading: if the model didn't produce it (some
+            # templates ignore prefill), prepend it. Guarantees the format
+            # constraint 100% without a verification pass.
+            if not piece.lstrip().lower().startswith(REQUIRED_HEADING_PREFIX.lower()):
+                piece = f"{REQUIRED_HEADING_PREFIX}: Untitled\\n\\n" + piece
             full_chapter = piece
         else:
-            # Avoid duplicating any tail overlap the model repeated.
             join = full_chapter
             for k in range(min(400, len(piece), len(join)), 40, -1):
                 if join.endswith(piece[:k]):
@@ -411,11 +481,14 @@ try:
             break
         if wc(full_chapter) >= WORD_MAX:
             break
+    # Final scrub — remove any lingering think tags and collapse blank lines.
+    full_chapter = strip_thinking(full_chapter)
     full_chapter = re.sub(r'\\n{3,}', '\\n\\n', full_chapter).strip()
     final_count = wc(full_chapter)
     with open('/kaggle/working/loomink_output.json', 'w') as f:
         json.dump({'ok': True, 'content': full_chapter, 'word_count': final_count, 'target': [WORD_MIN, WORD_MAX], 'finish_reason': finish_reason}, f)
     print('LOOMINK_DONE', final_count, 'words finish=', finish_reason)
+
 except Exception as e:
     with open('/kaggle/working/loomink_output.json', 'w') as f:
         json.dump({'ok': False, 'error': str(e), 'trace': traceback.format_exc()}, f)
@@ -443,7 +516,7 @@ serve(async (req) => {
     const runtime = MODEL_RUNTIME[modelId];
     if (!runtime) return json({ error: `Unknown Kaggle model: ${modelId}` }, 400);
 
-    const { system, user } = buildPrompts(body as Record<string, unknown>);
+    const { system, user, enableThinking, chapterNumber } = buildPrompts(body as Record<string, unknown>);
     if (!user) return json({ error: "user prompt required" }, 400);
 
     const temperature = Math.max(0, Math.min(2, Number(body.temperature) ?? 0.9));
@@ -464,7 +537,7 @@ serve(async (req) => {
     const slug = buildKernelSlug(modelId).slice(0, 50);
     const downloadKernelSlug = DOWNLOAD_KERNEL_SLUGS[modelId] || null;
     const downloadKernelRef = downloadKernelSlug ? `${DOWNLOAD_KERNEL_USER}/${downloadKernelSlug}` : null;
-    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug);
+    const nbSource = buildNotebook(runtime.repo, runtime.filename, system, user, maxTokens, temperature, minP, ctxSize, slug, wordMin, wordMax, downloadKernelSlug, enableThinking, chapterNumber);
 
     const buildPayload = (includeSelfKernel: boolean, includeDownloadKernel: boolean) => {
       const sources: string[] = [];

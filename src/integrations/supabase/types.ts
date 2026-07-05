@@ -455,6 +455,7 @@ export type Database = {
       style_memory: {
         Row: {
           created_at: string
+          custom_prompt: string | null
           detected_genre: string | null
           genre_conventions: Json
           id: string
@@ -467,6 +468,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          custom_prompt?: string | null
           detected_genre?: string | null
           genre_conventions?: Json
           id?: string
@@ -479,6 +481,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          custom_prompt?: string | null
           detected_genre?: string | null
           genre_conventions?: Json
           id?: string
@@ -624,6 +627,7 @@ export type Database = {
           model: string
           perspective: string
           temperature: number
+          thinking_enabled: boolean
           top_p: number
           updated_at: string
           user_id: string
@@ -640,6 +644,7 @@ export type Database = {
           model?: string
           perspective?: string
           temperature?: number
+          thinking_enabled?: boolean
           top_p?: number
           updated_at?: string
           user_id: string
@@ -656,6 +661,7 @@ export type Database = {
           model?: string
           perspective?: string
           temperature?: number
+          thinking_enabled?: boolean
           top_p?: number
           updated_at?: string
           user_id?: string

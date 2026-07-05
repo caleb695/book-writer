@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload, X, FileText, Loader2, Sparkles, BookOpen, CheckCircle2, Shield, ShieldAlert, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -18,7 +18,9 @@ interface StyleTabProps {
   styleMemory: StyleMemory | null;
   stylePatterns: StylePattern[];
   onSaveSynthesis: (synthesis: any, sourceFileId?: string) => Promise<void>;
+  onUpdateCustomPrompt: (text: string | null) => Promise<void>;
 }
+
 
 const ANALYZE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-style`;
 const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip,.epub,.mobi";
@@ -95,15 +97,60 @@ function getConfidenceLevel(p: StylePattern) {
   return "dormant";
 }
 
-const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis }: StyleTabProps) => {
+const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt }: StyleTabProps) => {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [showPatterns, setShowPatterns] = useState(true);
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [savingPrompt, setSavingPrompt] = useState(false);
   const finalizedJobsRef = useRef<Set<string>>(new Set());
 
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
+
+  // Build a plain-text default prompt from the current memory + patterns.
+  const buildDefaultPrompt = useCallback(() => {
+    const parts: string[] = [];
+    if (styleMemory?.style_cache) parts.push(styleMemory.style_cache.trim());
+    if (styleMemory?.detected_genre) parts.push(`Genre: ${styleMemory.detected_genre}.`);
+    const activePatternsAll = stylePatterns.filter(p => p.confidence >= 0.4);
+    if (activePatternsAll.length > 0) {
+      parts.push(
+        "Patterns to follow: " +
+          activePatternsAll.map(p => p.pattern_text.trim().replace(/\s+/g, " ")).join(" ") +
+          "."
+      );
+    }
+    const conventions = styleMemory?.genre_conventions ?? [];
+    if (conventions.length > 0) {
+      parts.push("Genre conventions: " + conventions.map(g => g.convention).join("; ") + ".");
+    }
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  }, [styleMemory, stylePatterns]);
+
+  const openPromptEditor = () => {
+    const initial = (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt();
+    setPromptDraft(initial);
+    setPromptEditorOpen(true);
+  };
+
+  const savePrompt = async () => {
+    setSavingPrompt(true);
+    try {
+      await onUpdateCustomPrompt(promptDraft.trim() || null);
+      toast.success(promptDraft.trim() ? "Custom style prompt saved" : "Reverted to auto style prompt");
+      setPromptEditorOpen(false);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save prompt");
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+
+  const resetPrompt = () => setPromptDraft(buildDefaultPrompt());
+
 
   // Resume any in-flight analysis jobs from the DB when the tab (re)mounts.
   // This is what makes analysis truly background: even after leaving the app
@@ -313,24 +360,60 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
 
       {/* Memory summary */}
       {styleMemory && (
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <button
+          type="button"
+          onClick={openPromptEditor}
+          className="w-full text-left rounded-lg border border-border bg-card p-4 space-y-3 hover:border-primary/50 transition-colors"
+          title="Click to view and edit the full style prompt sent to every model"
+        >
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-primary shrink-0" />
             <span className="text-sm font-medium text-foreground">Style Memory</span>
+            {styleMemory.custom_prompt && (
+              <span className="text-[10px] bg-primary text-primary-foreground px-2 py-0.5 rounded-full">Custom</span>
+            )}
             {styleMemory.detected_genre && (
               <span className="text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full ml-auto">
                 {styleMemory.detected_genre}
               </span>
             )}
           </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">{styleMemory.style_cache}</p>
+          <p className="text-xs text-muted-foreground leading-relaxed">{styleMemory.custom_prompt || styleMemory.style_cache}</p>
           <div className="flex gap-4 text-[10px] text-muted-foreground">
             <span>{activePatterns.length} active patterns</span>
             <span>{dormantPatterns.length} dormant</span>
             <span>{stylePatterns.filter(p => p.locked).length} locked</span>
+            <span className="ml-auto text-primary">Tap to edit prompt →</span>
+          </div>
+        </button>
+      )}
+
+      {promptEditorOpen && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !savingPrompt && setPromptEditorOpen(false)}>
+          <div className="w-full max-w-2xl bg-card border border-border rounded-lg p-5 space-y-3 max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-medium">Edit Style Prompt</h3>
+              <button onClick={() => setPromptEditorOpen(false)} className="ml-auto text-muted-foreground hover:text-foreground text-xs">Close</button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">This exact text is injected into every chapter generation (Kaggle and cloud models). Plain paragraph — no markdown needed.</p>
+            <textarea
+              value={promptDraft}
+              onChange={e => setPromptDraft(e.target.value)}
+              className="flex-1 w-full min-h-[300px] rounded-md border border-border bg-background p-3 text-sm font-serif leading-relaxed resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              placeholder="Describe the exact writing style, voice, and rules the AI must follow…"
+            />
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={resetPrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Reset from patterns</button>
+              <button onClick={() => { setPromptDraft(""); }} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Clear</button>
+              <button onClick={savePrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
+                {savingPrompt ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       )}
+
 
       {/* Pattern list */}
       {stylePatterns.length > 0 && (
