@@ -35,7 +35,13 @@ const MODEL_RUNTIME: Record<string, { repo: string; filename: string }> = {
   "fallenmerick-mn-violet-lotus-12b": { repo: "mradermacher/MN-Violet-Lotus-12B-GGUF", filename: "MN-Violet-Lotus-12B.Q8_0.gguf" },
   "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": { repo: "mradermacher/LFM2.5-1.2B-Instruct-Thinking-Claude-High-Reasoning-GGUF", filename: "LFM2.5-1.2B-Instruct-Thinking-Claude-High-Reasoning.f16.gguf" },
   "davidau-llama-3-2-8x3b-moe-dark-champion": { repo: "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF", filename: "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q5_k_s.gguf" },
+  // Newly added runners (mynameishiiii/<slug>). No dedicated download kernel yet —
+  // the runner will fall back to HuggingFace download on first run and cache in
+  // /kaggle/working for subsequent runs of the same kernel version.
+  "nanovel-27b": { repo: "mradermacher/NaNovel-27B-GGUF", filename: "NaNovel-27B.Q4_K_M.gguf" },
+  "the-creative-wordsmith-31b": { repo: "llmfan46/gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-GGUF", filename: "gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-Q4_K_S.gguf" },
 };
+
 
 // Pre-existing download notebooks owned by `mynameishiiii` whose /kaggle/working
 // output already contains the GGUF for each model. Attaching one as a
