@@ -107,19 +107,19 @@ export const AI_MODELS: ModelEntry[] = [
   // GGUF quantization on a Tesla T4 (~15GB VRAM). Repos / filenames verified live from
   // each notebook source. Context windows are conservative — the model + prompt + output
   // must all fit in VRAM.
-  { id: "kaggle/sophosympatheia-magistry-24b-v1-1", label: "Magistry-24B-v1.1 (Q6_K_L)", provider: "kaggle", contextWindow: 8192, hfRepo: "bartowski/sophosympatheia_Magistry-24B-v1.1-GGUF" },
+  { id: "kaggle/sophosympatheia-magistry-24b-v1-1", label: "Magistry-24B-v1.1 (Q6_K_L)", provider: "kaggle", contextWindow: 8192, hfRepo: "bartowski/sophosympatheia_Magistry-24B-v1.1-GGUF", supportsThinking: true },
   { id: "kaggle/thedrummer-cydonia-24b-v4-3", label: "Cydonia-24B-v4.3 (Q6_K)", provider: "kaggle", contextWindow: 8192, hfRepo: "TheDrummer/Cydonia-24B-v4.3-GGUF" },
   { id: "kaggle/fallenmerick-mn-violet-lotus-12b", label: "MN-Violet-Lotus-12B", provider: "kaggle", contextWindow: 16384, hfRepo: "FallenMerick/MN-Violet-Lotus-12B" },
   { id: "kaggle/pygmalionai-pygmalion-3-12b", label: "Pygmalion-3-12B (F16)", provider: "kaggle", contextWindow: 8192, hfRepo: "PygmalionAI/Pygmalion-3-12B-GGUF" },
-  { id: "kaggle/mradermacher-gemma3-27b-it-vl-glm-4-7", label: "Gemma3-27B-IT-VL GLM-4.7 (Q5_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Gemma3-27B-it-vl-GLM-4.7-Uncensored-Heretic-Deep-Reasoning-GGUF" },
-  { id: "kaggle/davidau-lfm2-5-1-2b-thinking-claude-4-6-opus", label: "LFM2.5-1.2B Thinking Claude-4.6", provider: "kaggle", contextWindow: 16384, hfRepo: "DavidAU/LFM2.5-1.2B-Thinking-Claude-4.6-Opus" },
-  { id: "kaggle/mradermacher-qwen3-4b-fiction-on-fire-series-7", label: "Qwen3-4B Fiction-On-Fire S7 (Q6_K)", provider: "kaggle", contextWindow: 16384, hfRepo: "mradermacher/Qwen3-4B-Fiction-On-Fire-Series-7-Model-1004-i1-GGUF" },
+  { id: "kaggle/mradermacher-gemma3-27b-it-vl-glm-4-7", label: "Gemma3-27B-IT-VL GLM-4.7 (Q5_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Gemma3-27B-it-vl-GLM-4.7-Uncensored-Heretic-Deep-Reasoning-GGUF", supportsThinking: true },
+  { id: "kaggle/davidau-lfm2-5-1-2b-thinking-claude-4-6-opus", label: "LFM2.5-1.2B Thinking Claude-4.6", provider: "kaggle", contextWindow: 16384, hfRepo: "DavidAU/LFM2.5-1.2B-Thinking-Claude-4.6-Opus", supportsThinking: true },
+  { id: "kaggle/mradermacher-qwen3-4b-fiction-on-fire-series-7", label: "Qwen3-4B Fiction-On-Fire S7 (Q6_K)", provider: "kaggle", contextWindow: 16384, hfRepo: "mradermacher/Qwen3-4B-Fiction-On-Fire-Series-7-Model-1004-i1-GGUF", supportsThinking: true },
   { id: "kaggle/thedrummer-rocinante-x-12b-v1", label: "Rocinante-X-12B-v1 (Q8_0)", provider: "kaggle", contextWindow: 16384, hfRepo: "TheDrummer/Rocinante-X-12B-v1-GGUF" },
   { id: "kaggle/mradermacher-l3-2-rogue-creative-instruct", label: "L3.2-Rogue-Creative-Instruct (F16)", provider: "kaggle", contextWindow: 16384, hfRepo: "mradermacher/L3.2-Rogue-Creative-Instruct-Uncensored-Abliterated-7B-GGUF" },
   { id: "kaggle/davidau-llama-3-2-8x3b-moe-dark-champion", label: "Llama-3.2-8x3B-MoE Dark-Champion", provider: "kaggle", contextWindow: 8192, hfRepo: "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct" },
   { id: "kaggle/mradermacher-mars-27b-v-1", label: "Mars-27B-v1 (i1-Q5_K_S)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Mars_27B_V.1-i1-GGUF" },
   { id: "kaggle/mradermacher-broken-tutu-24b-i1-gguf", label: "Broken-Tutu-24B (i1-Q6_K)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Broken-Tutu-24B-i1-GGUF" },
-  { id: "kaggle/mradermacher-synthia-s1-27b", label: "Synthia-S1-27B (Q5_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Synthia-S1-27b-GGUF" },
+  { id: "kaggle/mradermacher-synthia-s1-27b", label: "Synthia-S1-27B (Q5_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Synthia-S1-27b-GGUF", supportsThinking: true },
   { id: "kaggle/mradermacher-gemma4-garnetv2-31b", label: "Gemma4-Garnet-v2-31B (i1-Q4_1)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Gemma4-GarnetV2-31B-i1-GGUF" },
   { id: "kaggle/mradermacher-mag-mell-r1-21b", label: "Mag-Mell-R1-21B (Q8_0)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Mag-Mell-R1-21B-GGUF" },
   { id: "kaggle/thedrummer-fallen-gemma3-27b-v1-gguf", label: "Fallen-Gemma3-27B-v1 (Q5_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "TheDrummer/Fallen-Gemma3-27B-v1-GGUF" },
@@ -128,7 +128,11 @@ export const AI_MODELS: ModelEntry[] = [
   { id: "kaggle/mradermacher-mistralsmallcreative", label: "MistralSmall-Creative-24B (Q8_0)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/MistralSmall-Creative-24B-Realist-GGUF" },
   { id: "kaggle/mradermacher-gemma-the-writer-n-restless-quill-v2", label: "Gemma-Writer-Restless-Quill-v2 (F16)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/Gemma-The-Writer-N-Restless-Quill-V2-Enhanced32-10B-Uncensored-GGUF" },
   { id: "kaggle/thedrummer-skyfall-31b-v4-2", label: "Skyfall-31B-v4.2 (Q4_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "TheDrummer/Skyfall-31B-v4.2-GGUF" },
+  // Newly added (matched to Kaggle runners nanovel-27b and the-creative-wordsmith-31b)
+  { id: "kaggle/nanovel-27b", label: "NaNovel-27B (Q4_K_M)", provider: "kaggle", contextWindow: 8192, hfRepo: "mradermacher/NaNovel-27B-GGUF", supportsThinking: true },
+  { id: "kaggle/the-creative-wordsmith-31b", label: "Creative-Wordsmith-31B (Q4_K_S)", provider: "kaggle", contextWindow: 8192, hfRepo: "llmfan46/gemma-4-Ortenzya-The-Creative-Wordsmith-31B-it-uncensored-heretic-GGUF" },
 ];
+
 
 /** Format a context window like 131072 → "128K" */
 export function formatContextWindow(tokens?: number): string {
