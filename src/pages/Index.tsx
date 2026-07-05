@@ -180,7 +180,7 @@ const Index = () => {
         />
       </div>
       <div className={activeTab === "style" ? "flex-1 flex flex-col" : "hidden"}>
-        <StyleTab files={files} onUpload={handleUploadFile} onDelete={deleteFile} styleMemory={styleMemory} stylePatterns={stylePatterns} onSaveSynthesis={saveSynthesis} />
+        <StyleTab files={files} onUpload={handleUploadFile} onDelete={deleteFile} styleMemory={styleMemory} stylePatterns={stylePatterns} onSaveSynthesis={saveSynthesis} onUpdateCustomPrompt={updateCustomPrompt} />
       </div>
       <div className={activeTab === "development" ? "flex-1 flex flex-col" : "hidden"}>
         <DevTab
