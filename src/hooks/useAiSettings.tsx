@@ -13,6 +13,7 @@ export interface AiSettings {
   word_count_min: number;
   word_count_max: number;
   brainstorm_model: string;
+  thinking_enabled: boolean;
 }
 
 const DEFAULTS: AiSettings = {
@@ -26,7 +27,9 @@ const DEFAULTS: AiSettings = {
   word_count_min: 3500,
   word_count_max: 4000,
   brainstorm_model: "mistral-large-latest",
+  thinking_enabled: true,
 };
+
 
 export interface ModelEntry {
   id: string;
