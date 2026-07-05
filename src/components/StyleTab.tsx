@@ -360,24 +360,60 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
 
       {/* Memory summary */}
       {styleMemory && (
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <button
+          type="button"
+          onClick={openPromptEditor}
+          className="w-full text-left rounded-lg border border-border bg-card p-4 space-y-3 hover:border-primary/50 transition-colors"
+          title="Click to view and edit the full style prompt sent to every model"
+        >
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-primary shrink-0" />
             <span className="text-sm font-medium text-foreground">Style Memory</span>
+            {styleMemory.custom_prompt && (
+              <span className="text-[10px] bg-primary text-primary-foreground px-2 py-0.5 rounded-full">Custom</span>
+            )}
             {styleMemory.detected_genre && (
               <span className="text-[10px] bg-primary/20 text-primary px-2 py-0.5 rounded-full ml-auto">
                 {styleMemory.detected_genre}
               </span>
             )}
           </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">{styleMemory.style_cache}</p>
+          <p className="text-xs text-muted-foreground leading-relaxed">{styleMemory.custom_prompt || styleMemory.style_cache}</p>
           <div className="flex gap-4 text-[10px] text-muted-foreground">
             <span>{activePatterns.length} active patterns</span>
             <span>{dormantPatterns.length} dormant</span>
             <span>{stylePatterns.filter(p => p.locked).length} locked</span>
+            <span className="ml-auto text-primary">Tap to edit prompt →</span>
+          </div>
+        </button>
+      )}
+
+      {promptEditorOpen && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !savingPrompt && setPromptEditorOpen(false)}>
+          <div className="w-full max-w-2xl bg-card border border-border rounded-lg p-5 space-y-3 max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-medium">Edit Style Prompt</h3>
+              <button onClick={() => setPromptEditorOpen(false)} className="ml-auto text-muted-foreground hover:text-foreground text-xs">Close</button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">This exact text is injected into every chapter generation (Kaggle and cloud models). Plain paragraph — no markdown needed.</p>
+            <textarea
+              value={promptDraft}
+              onChange={e => setPromptDraft(e.target.value)}
+              className="flex-1 w-full min-h-[300px] rounded-md border border-border bg-background p-3 text-sm font-serif leading-relaxed resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              placeholder="Describe the exact writing style, voice, and rules the AI must follow…"
+            />
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={resetPrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Reset from patterns</button>
+              <button onClick={() => { setPromptDraft(""); }} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Clear</button>
+              <button onClick={savePrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
+                {savingPrompt ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       )}
+
 
       {/* Pattern list */}
       {stylePatterns.length > 0 && (
