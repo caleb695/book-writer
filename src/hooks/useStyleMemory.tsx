@@ -23,7 +23,9 @@ export interface StyleMemory {
   genre_conventions: Array<{ convention: string; checklist_question: string }>;
   style_cache: string;
   last_recached_at: string | null;
+  custom_prompt: string | null;
 }
+
 
 export interface GoldenExample {
   id: string;
