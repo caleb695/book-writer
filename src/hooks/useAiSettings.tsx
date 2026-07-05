@@ -39,7 +39,10 @@ export interface ModelEntry {
   contextWindow?: number;
   /** For kaggle models: HF/origin label and notes */
   hfRepo?: string;
+  /** True if the model uses internal <think>/reasoning tokens the user can toggle off */
+  supportsThinking?: boolean;
 }
+
 
 export const AI_MODELS: ModelEntry[] = [
   // ========== MISTRAL — Frontier Generalist ==========
