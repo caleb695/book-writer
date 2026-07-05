@@ -675,19 +675,19 @@ const AiTab = ({
         fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
         partialContent,
         styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
+        customStylePrompt: styleMemory?.custom_prompt || undefined,
         structuredMemory: structuredMemoryPayload,
         checklist: checklistPayload,
         ultraContextInjection: ultraContextInjection || undefined,
         model: activeModel,
         temperature: aiSettings.temperature,
-        // The "top_p" slider is now repurposed as min_p (see UI). Kaggle uses
-        // min_p natively; non-Kaggle providers still receive top_p clamped to
-        // its valid 0-1 range for backward compatibility.
         minP: aiSettings.top_p,
         min_p: aiSettings.top_p,
         top_p: Math.min(1, Math.max(0, aiSettings.top_p)),
         contextWindow: ctx,
+        enableThinking: aiSettings.thinking_enabled,
       };
+
 
       const polishParams = {
         rewrite: !!rewrite,
