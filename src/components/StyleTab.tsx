@@ -18,7 +18,9 @@ interface StyleTabProps {
   styleMemory: StyleMemory | null;
   stylePatterns: StylePattern[];
   onSaveSynthesis: (synthesis: any, sourceFileId?: string) => Promise<void>;
+  onUpdateCustomPrompt: (text: string | null) => Promise<void>;
 }
+
 
 const ANALYZE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-style`;
 const ACCEPTED_TYPES = ".pdf,.json,.jsonl,.csv,.txt,.md,.docx,.zip,.epub,.mobi";
