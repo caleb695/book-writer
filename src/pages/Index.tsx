@@ -23,7 +23,7 @@ const Index = () => {
     updateMessage, commitMessage, deleteMessage, setMessages,
   } = useProject();
   const { settings: aiSettings, updateSettings: updateAiSettings } = useAiSettings();
-  const { memory: styleMemory, patterns: stylePatterns, saveSynthesis, scoreFidelity, scoring: styleScoring, lastFidelity } = useStyleMemory();
+  const { memory: styleMemory, patterns: stylePatterns, saveSynthesis, scoreFidelity, scoring: styleScoring, lastFidelity, updateCustomPrompt } = useStyleMemory();
   const { triples: memoriTriples, retrieve: memoriRetrieve, storeTriples } = useMemori();
   const [activeTab, setActiveTab] = useState<TabId>("files");
 
