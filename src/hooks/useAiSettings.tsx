@@ -243,7 +243,9 @@ export function useAiSettings() {
         word_count_min: next.word_count_min,
         word_count_max: next.word_count_max,
         brainstorm_model: next.brainstorm_model,
+        thinking_enabled: next.thinking_enabled,
       }, { onConflict: "user_id" });
+
 
     if (error) console.error("Save AI settings error:", error);
   }, [user, settings]);
