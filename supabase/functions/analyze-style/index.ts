@@ -118,16 +118,53 @@ const SYNTHESIS_TOOL = {
 
 const CHUNK_SYSTEM_PROMPT = `You are an expert writing style analyzer. You analyze text excerpts and extract concrete, measurable writing patterns.
 
+Look BROADLY and DEEPLY. Do not stop at surface features like "varies sentence length". Explicitly look for and extract patterns in EVERY category below whenever the text shows them repeatedly:
+
+VOICE & PROSE
+- Sentence rhythm and length distribution (fragments, punchy, long sinuous, etc.)
+- Paragraph length habits and where breaks fall (mid-thought, after dialogue, etc.)
+- Word choice: register (plain / literary / archaic), reliance on strong verbs vs. adverbs, favorite adjective families, avoided vocabulary
+- Diction quirks: contractions, profanity level, coined words, repeated flagship words the author leans on
+
+FIGURATIVE LANGUAGE
+- Frequency of metaphor / simile (approximate: "roughly one per page", "sparingly", "dense")
+- Type of imagery preferred (bodily, mechanical, elemental, natural, mythic, mundane)
+- Whether metaphors are extended or single-shot
+- Symbol/motif recurrence
+
+DIALOGUE & CHARACTER VOICE
+- How each recurring character speaks (vocabulary, rhythm, tics, formality, interruptions)
+- Balance of dialogue vs. narration
+- Use of action beats vs. speaker tags; unusual tag habits
+- Subtext handling — is meaning stated or implied?
+
+EMOTION EXPRESSION
+- How the author renders feeling (physiological tells vs. labels vs. metaphor vs. dialogue subtext)
+- Whether interiority is close/distant, streaming or measured
+- Recurring emotional tones (dread, wistfulness, dry humor, tenderness)
+
+STRUCTURE & PACING
+- Scene opening and closing habits (hook, in medias res, quiet observation, cliffhanger)
+- Chapter length habits
+- POV handling and any drift patterns
+- Time skips and how transitions are marked
+
+WORLD/CONTINUITY RULES (if fiction shows worldbuilding)
+- Consistent rules of magic/technology/politics
+- Naming conventions
+- Recurring settings and how they're described
+
 For EVERY pattern you identify, you MUST also create a binary yes/no checklist question. These questions must be:
 - Mechanically verifiable (not subjective)
-- Concrete and specific (not vague like "is the writing good?")  
+- Concrete and specific
 - Directly tied to the pattern observed
 
 Examples of GOOD checklist questions:
 - "Does every dialogue exchange use action beats instead of speaker tags (said/asked/replied)?"
 - "Does the scene open with a character in motion rather than static description?"
 - "Are sentences in tense moments kept under 15 words on average?"
-- "Does the POV stay strictly in one character's head per scene?"
+- "Does at least one metaphor appear per page?"
+- "Is Elena's dialogue always terse (under 8 words per line)?"
 
 Examples of BAD checklist questions:
 - "Is the writing style consistent?" (too vague)
@@ -140,7 +177,10 @@ Assign confidence scores honestly:
 - 0.3-0.49: Pattern appears rarely, might be coincidental
 - Below 0.3: Very uncertain, limited evidence
 
+Aim for AT LEAST 8-15 patterns per chunk when the text supports it. Do not skip a category just because it feels obvious — if the pattern is present, capture it.
+
 You MUST call the store_patterns function with your analysis. Do NOT return plain text.`;
+
 
 const SYNTHESIS_SYSTEM_PROMPT = `You are merging multiple chunk-level writing style analyses into one unified style profile. You have analyses from different sections of the same text.
 
