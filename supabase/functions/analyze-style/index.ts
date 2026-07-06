@@ -495,6 +495,19 @@ async function runStructured(
       if (p.confidence >= 0.95) p.locked = true;
     }
 
+    // Merge into the user's active style prompt: add only patterns not already
+    // covered, as imperative instructions.
+    try {
+      const merged = await mergePatternsIntoPrompt(currentCustomPrompt, synthesis, bookTitle, apiKey);
+      if (merged) {
+        synthesis.updated_custom_prompt = merged.updatedPrompt;
+        synthesis.custom_prompt_additions = merged.additions;
+        console.log(`analyze-style[${jobId}]: prompt merge added ${merged.additions} instruction(s)`);
+      }
+    } catch (e) {
+      console.error(`analyze-style[${jobId}]: prompt merge failed:`, e);
+    }
+
     await update({
       status: "done",
       synthesis,
@@ -504,6 +517,7 @@ async function runStructured(
       chunks_total: chunks.length,
     });
     console.log(`analyze-style[${jobId}]: done (${chunkAnalyses.length}/${chunks.length} chunks)`);
+
   } catch (e) {
     console.error(`analyze-style[${jobId}] failed:`, e);
     await update({ status: "failed", error: e instanceof Error ? e.message : String(e) });
