@@ -133,10 +133,12 @@ export function substitutePromptPlaceholders(
   prompt: string,
   vars: { chapterNumber?: number; fictionType?: string; perspective?: string; wordCountMin?: number; wordCountMax?: number },
 ): string {
-  return prompt
-    .replaceAll("{{CHAPTER_NUMBER}}", String(vars.chapterNumber ?? 1))
-    .replaceAll("{{FICTION_TYPE}}", vars.fictionType ?? "")
-    .replaceAll("{{PERSPECTIVE}}", vars.perspective ?? "")
-    .replaceAll("{{WORD_COUNT_MIN}}", String(vars.wordCountMin ?? 3500))
-    .replaceAll("{{WORD_COUNT_MAX}}", String(vars.wordCountMax ?? 4000));
+  const map: Record<string, string> = {
+    "{{CHAPTER_NUMBER}}": String(vars.chapterNumber ?? 1),
+    "{{FICTION_TYPE}}": vars.fictionType ?? "",
+    "{{PERSPECTIVE}}": vars.perspective ?? "",
+    "{{WORD_COUNT_MIN}}": String(vars.wordCountMin ?? 3500),
+    "{{WORD_COUNT_MAX}}": String(vars.wordCountMax ?? 4000),
+  };
+  return prompt.replace(/\{\{(CHAPTER_NUMBER|FICTION_TYPE|PERSPECTIVE|WORD_COUNT_MIN|WORD_COUNT_MAX)\}\}/g, (m) => map[m] ?? m);
 }
