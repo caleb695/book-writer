@@ -100,7 +100,7 @@ function getConfidenceLevel(p: StylePattern) {
   return "dormant";
 }
 
-const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt }: StyleTabProps) => {
+const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt, aiSettings }: StyleTabProps) => {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -113,25 +113,25 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
 
-  // Build a plain-text default prompt from the current memory + patterns.
+  // Full default prompt = every static instruction the model receives,
+  // seeded with the learned patterns/style_cache. The user can edit this
+  // freely — whatever they save is used verbatim.
   const buildDefaultPrompt = useCallback(() => {
-    const parts: string[] = [];
-    if (styleMemory?.style_cache) parts.push(styleMemory.style_cache.trim());
-    if (styleMemory?.detected_genre) parts.push(`Genre: ${styleMemory.detected_genre}.`);
-    const activePatternsAll = stylePatterns.filter(p => p.confidence >= 0.4);
-    if (activePatternsAll.length > 0) {
-      parts.push(
-        "Patterns to follow: " +
-          activePatternsAll.map(p => p.pattern_text.trim().replace(/\s+/g, " ")).join(" ") +
-          "."
-      );
-    }
-    const conventions = styleMemory?.genre_conventions ?? [];
-    if (conventions.length > 0) {
-      parts.push("Genre conventions: " + conventions.map(g => g.convention).join("; ") + ".");
-    }
-    return parts.join(" ").replace(/\s+/g, " ").trim();
-  }, [styleMemory, stylePatterns]);
+    return buildFullSystemPrompt({
+      fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : "",
+      perspective: aiSettings.perspective || "",
+      wordCountMin: aiSettings.word_count_min,
+      wordCountMax: aiSettings.word_count_max,
+      styleCache: styleMemory?.style_cache || "",
+      patterns: stylePatterns.map(p => ({
+        pattern_text: p.pattern_text,
+        checklist_question: p.checklist_question,
+        confidence: p.confidence,
+      })),
+      genreConventions: styleMemory?.genre_conventions ?? [],
+      detectedGenre: styleMemory?.detected_genre ?? "",
+    });
+  }, [styleMemory, stylePatterns, aiSettings]);
 
   const openPromptEditor = () => {
     const initial = (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt();
@@ -153,6 +153,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   };
 
   const resetPrompt = () => setPromptDraft(buildDefaultPrompt());
+
 
 
   // Resume any in-flight analysis jobs from the DB when the tab (re)mounts.
