@@ -426,10 +426,25 @@ Do NOT pad with repetition or filler. Every word must serve the story. But you M
       }
     }
 
+    // === CUSTOM STYLE PROMPT OVERRIDE ===
+    // When the user has authored/edited a full style prompt, use it verbatim
+    // as the system prompt — replacing every generic instruction above.
+    // Placeholders let dynamic values (chapter number, word count, etc.) still
+    // work regardless of when the prompt was saved.
+    if (customStylePrompt) {
+      systemPrompt = customStylePrompt
+        .replace(/\{\{CHAPTER_NUMBER\}\}/g, String(chapterNumber))
+        .replace(/\{\{FICTION_TYPE\}\}/g, fictionType || "")
+        .replace(/\{\{PERSPECTIVE\}\}/g, perspective || "")
+        .replace(/\{\{WORD_COUNT_MIN\}\}/g, String(wordCountMin))
+        .replace(/\{\{WORD_COUNT_MAX\}\}/g, String(wordCountMax));
+    }
+
     // === ULTRACONTEXT INJECTION (pre-assembled by client, always inject if present) ===
     if (ultraContextInjection) {
       systemPrompt += `\n\nMEMORY CONTEXT (compressed semantic triples — follow precisely):\n${ultraContextInjection}`;
     }
+
 
     let userContent = "";
 
