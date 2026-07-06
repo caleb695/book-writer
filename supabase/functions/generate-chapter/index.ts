@@ -202,6 +202,7 @@ serve(async (req) => {
     const fictionType = normalizeText(body.fictionType);
     const styleGuides = compressCollection(body.styleGuides, STYLE_GUIDES_TOTAL_MAX_CHARS, STYLE_GUIDE_ITEM_MAX_CHARS, "sample");
     const partialContent = takeTail(body.partialContent ?? "", PARTIAL_CONTENT_MAX_CHARS);
+    const customStylePrompt = normalizeText(body.customStylePrompt);
 
     const structuredMemory = body.structuredMemory || null;
     const checklist = Array.isArray(body.checklist) ? body.checklist : [];
@@ -211,6 +212,9 @@ serve(async (req) => {
     const temperature = typeof body.temperature === "number" ? Math.max(0, Math.min(2, body.temperature)) : 0.7;
     const top_p = typeof body.top_p === "number" ? Math.max(0, Math.min(1, body.top_p)) : 0.9;
     const kaggleEndpoint = body.kaggleEndpoint && typeof body.kaggleEndpoint === "object" ? body.kaggleEndpoint as { url?: string; apiKey?: string; hfRepo?: string; contextWindow?: number } : null;
+    const wordCountMin = Number.isFinite(Number(body.wordCountMin)) ? Number(body.wordCountMin) : 3500;
+    const wordCountMax = Number.isFinite(Number(body.wordCountMax)) ? Number(body.wordCountMax) : 4000;
+
 
     if (!outline) return jsonResponse({ error: "Outline is required" }, 400);
 
