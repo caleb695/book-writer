@@ -118,16 +118,53 @@ const SYNTHESIS_TOOL = {
 
 const CHUNK_SYSTEM_PROMPT = `You are an expert writing style analyzer. You analyze text excerpts and extract concrete, measurable writing patterns.
 
+Look BROADLY and DEEPLY. Do not stop at surface features like "varies sentence length". Explicitly look for and extract patterns in EVERY category below whenever the text shows them repeatedly:
+
+VOICE & PROSE
+- Sentence rhythm and length distribution (fragments, punchy, long sinuous, etc.)
+- Paragraph length habits and where breaks fall (mid-thought, after dialogue, etc.)
+- Word choice: register (plain / literary / archaic), reliance on strong verbs vs. adverbs, favorite adjective families, avoided vocabulary
+- Diction quirks: contractions, profanity level, coined words, repeated flagship words the author leans on
+
+FIGURATIVE LANGUAGE
+- Frequency of metaphor / simile (approximate: "roughly one per page", "sparingly", "dense")
+- Type of imagery preferred (bodily, mechanical, elemental, natural, mythic, mundane)
+- Whether metaphors are extended or single-shot
+- Symbol/motif recurrence
+
+DIALOGUE & CHARACTER VOICE
+- How each recurring character speaks (vocabulary, rhythm, tics, formality, interruptions)
+- Balance of dialogue vs. narration
+- Use of action beats vs. speaker tags; unusual tag habits
+- Subtext handling — is meaning stated or implied?
+
+EMOTION EXPRESSION
+- How the author renders feeling (physiological tells vs. labels vs. metaphor vs. dialogue subtext)
+- Whether interiority is close/distant, streaming or measured
+- Recurring emotional tones (dread, wistfulness, dry humor, tenderness)
+
+STRUCTURE & PACING
+- Scene opening and closing habits (hook, in medias res, quiet observation, cliffhanger)
+- Chapter length habits
+- POV handling and any drift patterns
+- Time skips and how transitions are marked
+
+WORLD/CONTINUITY RULES (if fiction shows worldbuilding)
+- Consistent rules of magic/technology/politics
+- Naming conventions
+- Recurring settings and how they're described
+
 For EVERY pattern you identify, you MUST also create a binary yes/no checklist question. These questions must be:
 - Mechanically verifiable (not subjective)
-- Concrete and specific (not vague like "is the writing good?")  
+- Concrete and specific
 - Directly tied to the pattern observed
 
 Examples of GOOD checklist questions:
 - "Does every dialogue exchange use action beats instead of speaker tags (said/asked/replied)?"
 - "Does the scene open with a character in motion rather than static description?"
 - "Are sentences in tense moments kept under 15 words on average?"
-- "Does the POV stay strictly in one character's head per scene?"
+- "Does at least one metaphor appear per page?"
+- "Is Elena's dialogue always terse (under 8 words per line)?"
 
 Examples of BAD checklist questions:
 - "Is the writing style consistent?" (too vague)
@@ -140,7 +177,10 @@ Assign confidence scores honestly:
 - 0.3-0.49: Pattern appears rarely, might be coincidental
 - Below 0.3: Very uncertain, limited evidence
 
+Aim for AT LEAST 8-15 patterns per chunk when the text supports it. Do not skip a category just because it feels obvious — if the pattern is present, capture it.
+
 You MUST call the store_patterns function with your analysis. Do NOT return plain text.`;
+
 
 const SYNTHESIS_SYSTEM_PROMPT = `You are merging multiple chunk-level writing style analyses into one unified style profile. You have analyses from different sections of the same text.
 
@@ -265,6 +305,100 @@ async function synthesizeChunks(
   return JSON.parse(toolCall.function.arguments);
 }
 
+// Given the user's currently active style prompt (custom or default) and the
+// freshly extracted patterns/synthesis, ask Mistral Large to identify which
+// patterns are NOT already covered in the prompt, then rewrite the prompt to
+// include those missing patterns as IMPERATIVE instructions ("Use short
+// sentences during combat.") — never descriptive commentary ("I noticed short
+// sentences in combat."). Instructions already present are left untouched.
+//
+// Returns { updatedPrompt, additions } where `additions` is a count of newly
+// added instructions. If the current prompt is empty or the AI fails, returns
+// null and the caller keeps the existing prompt.
+async function mergePatternsIntoPrompt(
+  currentPrompt: string,
+  synthesis: any,
+  bookTitle: string,
+  apiKey: string,
+): Promise<{ updatedPrompt: string; additions: number } | null> {
+  const trimmedPrompt = (currentPrompt || "").trim();
+  if (!trimmedPrompt) return null;
+  const patterns = Array.isArray(synthesis?.patterns) ? synthesis.patterns : [];
+  const conventions = Array.isArray(synthesis?.genre_conventions) ? synthesis.genre_conventions : [];
+  const voice = synthesis?.voice_profile || {};
+  if (patterns.length === 0 && conventions.length === 0 && Object.keys(voice).length === 0) return null;
+
+  const patternDump = [
+    ...patterns.map((p: any) => `[${p.category || "pattern"} | conf ${(p.confidence ?? 0).toFixed(2)}] ${p.pattern_text} — check: ${p.checklist_question}`),
+    ...conventions.map((g: any) => `[genre convention] ${g.convention} — check: ${g.checklist_question || ""}`),
+  ].join("\n");
+
+  const sys = `You are updating a novelist's style-prompt so it captures new patterns learned from an example text. Your job:
+
+1. Read the CURRENT PROMPT the writer sends to the model on every chapter.
+2. Read the NEWLY OBSERVED PATTERNS extracted from a new example.
+3. For each observed pattern, decide if the CURRENT PROMPT already tells the model to do that thing (even in different words).
+4. If it does NOT, add a single imperative instruction that would cause the model to produce that pattern.
+5. Preserve the current prompt's structure, headings, and existing text EXACTLY. Only add new lines where appropriate. Do NOT rewrite or rephrase existing rules. Do NOT delete anything.
+6. Add new instructions as bullet points under the MOST RELEVANT existing section (or create a "LEARNED FROM EXAMPLES" section at the end if no existing section fits).
+7. Write instructions in IMPERATIVE form — "Use short punchy sentences during combat scenes." NEVER "I noticed short sentences during combat." Never "The author uses..."
+8. Be specific and mechanical. Include named characters and their speech patterns when relevant. Include approximate frequencies ("include a metaphor roughly once per page") when the pattern is about density.
+9. Do not add instructions for patterns with confidence below 0.5 unless they are unusually specific and useful.
+10. Do not duplicate. If two observed patterns say the same thing, add only one instruction.
+
+Return via the store_updated_prompt tool. Do NOT return plain text.`;
+
+  const tool = {
+    type: "function" as const,
+    function: {
+      name: "store_updated_prompt",
+      description: "Store the updated style prompt with any newly added instructions",
+      parameters: {
+        type: "object",
+        properties: {
+          updated_prompt: { type: "string", description: "The full updated prompt with new instructions added. Existing text preserved verbatim." },
+          additions_count: { type: "integer", description: "Number of NEW instructions you added (0 if the prompt already covered everything)." },
+          added_instructions: { type: "array", items: { type: "string" }, description: "The exact text of each new instruction you added." },
+        },
+        required: ["updated_prompt", "additions_count"],
+      },
+    },
+  };
+
+  const resp = await fetch(API_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: `CURRENT PROMPT:\n\n${trimmedPrompt}\n\n---\n\nNEWLY OBSERVED PATTERNS (from "${bookTitle}"):\n\n${patternDump}\n\nVOICE PROFILE: ${JSON.stringify(voice)}\n\nNow return the updated prompt with any missing instructions added.` },
+      ],
+      tools: [tool],
+      tool_choice: { type: "function", function: { name: "store_updated_prompt" } },
+      temperature: 0.2,
+    }),
+  });
+
+  if (!resp.ok) {
+    console.error("mergePatternsIntoPrompt failed:", resp.status, await resp.text());
+    return null;
+  }
+  const data = await resp.json();
+  const call = data.choices?.[0]?.message?.tool_calls?.[0];
+  if (!call?.function?.arguments) return null;
+  try {
+    const parsed = JSON.parse(call.function.arguments);
+    const updatedPrompt = typeof parsed.updated_prompt === "string" ? parsed.updated_prompt : "";
+    const additions = Number(parsed.additions_count ?? 0);
+    if (!updatedPrompt.trim()) return null;
+    return { updatedPrompt, additions };
+  } catch (e) {
+    console.error("mergePatternsIntoPrompt parse failed:", e);
+    return null;
+  }
+}
+
 // --- Background runner: does the chunk analysis + synthesis and writes
 // progress/result to the style_analysis_jobs row. Runs inside
 // EdgeRuntime.waitUntil so it survives after the HTTP response is sent.
@@ -275,7 +409,9 @@ async function runStructured(
   contentHash: string | null,
   apiKey: string,
   admin: ReturnType<typeof createClient>,
+  currentCustomPrompt: string,
 ) {
+
   const update = (patch: Record<string, unknown>) =>
     admin.from("style_analysis_jobs").update(patch).eq("id", jobId);
 
@@ -359,6 +495,19 @@ async function runStructured(
       if (p.confidence >= 0.95) p.locked = true;
     }
 
+    // Merge into the user's active style prompt: add only patterns not already
+    // covered, as imperative instructions.
+    try {
+      const merged = await mergePatternsIntoPrompt(currentCustomPrompt, synthesis, bookTitle, apiKey);
+      if (merged) {
+        synthesis.updated_custom_prompt = merged.updatedPrompt;
+        synthesis.custom_prompt_additions = merged.additions;
+        console.log(`analyze-style[${jobId}]: prompt merge added ${merged.additions} instruction(s)`);
+      }
+    } catch (e) {
+      console.error(`analyze-style[${jobId}]: prompt merge failed:`, e);
+    }
+
     await update({
       status: "done",
       synthesis,
@@ -368,6 +517,7 @@ async function runStructured(
       chunks_total: chunks.length,
     });
     console.log(`analyze-style[${jobId}]: done (${chunkAnalyses.length}/${chunks.length} chunks)`);
+
   } catch (e) {
     console.error(`analyze-style[${jobId}] failed:`, e);
     await update({ status: "failed", error: e instanceof Error ? e.message : String(e) });
@@ -378,7 +528,7 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { excerpts, bookTitle, mode, contentHash } = await req.json();
+    const { excerpts, bookTitle, mode, contentHash, currentCustomPrompt } = await req.json();
     const MISTRAL_API_KEY = Deno.env.get("MISTRAL_API_KEY");
     if (!MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY is not configured");
 
@@ -450,7 +600,9 @@ serve(async (req) => {
         typeof contentHash === "string" ? contentHash : null,
         MISTRAL_API_KEY,
         admin,
+        typeof currentCustomPrompt === "string" ? currentCustomPrompt : "",
       ),
+
     );
 
     return jsonResponse({ jobId: job.id, status: "running" }, 202);

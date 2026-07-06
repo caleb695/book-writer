@@ -8,6 +8,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import type { UploadedFile } from "@/hooks/useProject";
 import type { StylePattern, StyleMemory } from "@/hooks/useStyleMemory";
+import type { AiSettings } from "@/hooks/useAiSettings";
+import { buildFullSystemPrompt } from "@/lib/systemPromptTemplate";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs`;
 
@@ -19,6 +21,7 @@ interface StyleTabProps {
   stylePatterns: StylePattern[];
   onSaveSynthesis: (synthesis: any, sourceFileId?: string) => Promise<void>;
   onUpdateCustomPrompt: (text: string | null) => Promise<void>;
+  aiSettings: AiSettings;
 }
 
 
@@ -97,7 +100,7 @@ function getConfidenceLevel(p: StylePattern) {
   return "dormant";
 }
 
-const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt }: StyleTabProps) => {
+const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSaveSynthesis, onUpdateCustomPrompt, aiSettings }: StyleTabProps) => {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -110,25 +113,25 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
 
-  // Build a plain-text default prompt from the current memory + patterns.
+  // Full default prompt = every static instruction the model receives,
+  // seeded with the learned patterns/style_cache. The user can edit this
+  // freely — whatever they save is used verbatim.
   const buildDefaultPrompt = useCallback(() => {
-    const parts: string[] = [];
-    if (styleMemory?.style_cache) parts.push(styleMemory.style_cache.trim());
-    if (styleMemory?.detected_genre) parts.push(`Genre: ${styleMemory.detected_genre}.`);
-    const activePatternsAll = stylePatterns.filter(p => p.confidence >= 0.4);
-    if (activePatternsAll.length > 0) {
-      parts.push(
-        "Patterns to follow: " +
-          activePatternsAll.map(p => p.pattern_text.trim().replace(/\s+/g, " ")).join(" ") +
-          "."
-      );
-    }
-    const conventions = styleMemory?.genre_conventions ?? [];
-    if (conventions.length > 0) {
-      parts.push("Genre conventions: " + conventions.map(g => g.convention).join("; ") + ".");
-    }
-    return parts.join(" ").replace(/\s+/g, " ").trim();
-  }, [styleMemory, stylePatterns]);
+    return buildFullSystemPrompt({
+      fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : "",
+      perspective: aiSettings.perspective || "",
+      wordCountMin: aiSettings.word_count_min,
+      wordCountMax: aiSettings.word_count_max,
+      styleCache: styleMemory?.style_cache || "",
+      patterns: stylePatterns.map(p => ({
+        pattern_text: p.pattern_text,
+        checklist_question: p.checklist_question,
+        confidence: p.confidence,
+      })),
+      genreConventions: styleMemory?.genre_conventions ?? [],
+      detectedGenre: styleMemory?.detected_genre ?? "",
+    });
+  }, [styleMemory, stylePatterns, aiSettings]);
 
   const openPromptEditor = () => {
     const initial = (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt();
@@ -150,6 +153,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   };
 
   const resetPrompt = () => setPromptDraft(buildDefaultPrompt());
+
 
 
   // Resume any in-flight analysis jobs from the DB when the tab (re)mounts.
@@ -215,6 +219,22 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               const patternCount = synthesis.patterns?.length || 0;
               const chunksDone = job.chunks_completed || 0;
               toast.success(`${pf.name}: ${patternCount} patterns extracted across ${chunksDone} chunks!`);
+              // If the analyzer produced a merged custom prompt (added new
+              // instructions to the user's existing prompt), persist it.
+              const updatedPrompt = typeof synthesis.updated_custom_prompt === "string"
+                ? synthesis.updated_custom_prompt.trim()
+                : "";
+              if (updatedPrompt) {
+                try {
+                  await onUpdateCustomPrompt(updatedPrompt);
+                  const added = Number(synthesis.custom_prompt_additions ?? 0);
+                  toast.success(added > 0
+                    ? `Style prompt updated with ${added} new instruction${added === 1 ? "" : "s"}.`
+                    : "Style prompt reviewed — no new rules to add.");
+                } catch (e: any) {
+                  console.warn("Failed to save updated custom prompt:", e);
+                }
+              }
               const contradictions: any = job.contradictions;
               if (Array.isArray(contradictions) && contradictions.length > 0) {
                 toast.warning(`${contradictions.length} contradictions detected and resolved.`);
@@ -226,6 +246,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
           setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "done" } : p));
           setTimeout(() => setPendingFiles(prev => prev.filter(p => p.id !== pf.id)), 4000);
         } else if (job.status === "failed") {
+
           setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "error", error: job.error || "Analysis failed" } : p));
           toast.error(`${pf.name}: ${job.error || "Analysis failed"}`);
         }
@@ -288,7 +309,17 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
           Authorization: `Bearer ${token}`,
           apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         },
-        body: JSON.stringify({ excerpts: fullText, bookTitle, mode: "structured", contentHash: hash }),
+        body: JSON.stringify({
+          excerpts: fullText,
+          bookTitle,
+          mode: "structured",
+          contentHash: hash,
+          // Send the user's currently active style prompt (custom or default).
+          // The analyzer will inspect it, extract patterns from the new file,
+          // and only ADD instructions for patterns not already covered.
+          currentCustomPrompt: (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt(),
+        }),
+
       });
 
       if (!resp.ok && resp.status !== 202) {

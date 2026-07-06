@@ -213,13 +213,25 @@ HUMAN VOICE (write like a real novelist, not an AI):
   if (perspective) system += `\n- Write every sentence in ${perspective} perspective.`;
   if (fictionType) system += `\n- Match the conventions, pacing, tone, and dialogue style of ${fictionType}.`;
   if (wordCountInstruction) system += `\n- ${wordCountInstruction}`;
+
+  // When the user has a full custom style prompt, use it verbatim as the
+  // system prompt (with placeholder substitution). It fully replaces the
+  // generic instructions above.
   if (customStylePrompt) {
-    system += `\n\nUSER STYLE OVERRIDE (this is the definitive style guide, follow it above any generic advice above):\n${customStylePrompt}`;
+    const wordMinN = Number(body.wordCountMin) || 3500;
+    const wordMaxN = Number(body.wordCountMax) || 4000;
+    system = customStylePrompt
+      .replace(/\{\{CHAPTER_NUMBER\}\}/g, String(chapterNumber))
+      .replace(/\{\{FICTION_TYPE\}\}/g, fictionType || "")
+      .replace(/\{\{PERSPECTIVE\}\}/g, perspective || "")
+      .replace(/\{\{WORD_COUNT_MIN\}\}/g, String(wordMinN))
+      .replace(/\{\{WORD_COUNT_MAX\}\}/g, String(wordMaxN));
   } else {
     if (styleGuides) system += `\n\nSTYLE GUIDE:\n${styleGuides}`;
     if (checklistText) system += `\n\nSTYLE CHECKLIST:\n${checklistText}`;
   }
   if (ultraContextInjection) system += `\n\nMEMORY CONTEXT:\n${ultraContextInjection}`;
+
 
   if (!enableThinking) {
     system += `\n\nOUTPUT MODE: Do NOT use internal reasoning tags (no <think>, no </think>, no chain-of-thought, no planning aloud). Output ONLY the finished chapter prose starting with the chapter heading. Any thinking must be silent.`;

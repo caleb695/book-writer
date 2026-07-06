@@ -202,6 +202,7 @@ serve(async (req) => {
     const fictionType = normalizeText(body.fictionType);
     const styleGuides = compressCollection(body.styleGuides, STYLE_GUIDES_TOTAL_MAX_CHARS, STYLE_GUIDE_ITEM_MAX_CHARS, "sample");
     const partialContent = takeTail(body.partialContent ?? "", PARTIAL_CONTENT_MAX_CHARS);
+    const customStylePrompt = normalizeText(body.customStylePrompt);
 
     const structuredMemory = body.structuredMemory || null;
     const checklist = Array.isArray(body.checklist) ? body.checklist : [];
@@ -211,6 +212,9 @@ serve(async (req) => {
     const temperature = typeof body.temperature === "number" ? Math.max(0, Math.min(2, body.temperature)) : 0.7;
     const top_p = typeof body.top_p === "number" ? Math.max(0, Math.min(1, body.top_p)) : 0.9;
     const kaggleEndpoint = body.kaggleEndpoint && typeof body.kaggleEndpoint === "object" ? body.kaggleEndpoint as { url?: string; apiKey?: string; hfRepo?: string; contextWindow?: number } : null;
+    const wordCountMin = Number.isFinite(Number(body.wordCountMin)) ? Number(body.wordCountMin) : 3500;
+    const wordCountMax = Number.isFinite(Number(body.wordCountMax)) ? Number(body.wordCountMax) : 4000;
+
 
     if (!outline) return jsonResponse({ error: "Outline is required" }, 400);
 
@@ -422,10 +426,25 @@ Do NOT pad with repetition or filler. Every word must serve the story. But you M
       }
     }
 
+    // === CUSTOM STYLE PROMPT OVERRIDE ===
+    // When the user has authored/edited a full style prompt, use it verbatim
+    // as the system prompt — replacing every generic instruction above.
+    // Placeholders let dynamic values (chapter number, word count, etc.) still
+    // work regardless of when the prompt was saved.
+    if (customStylePrompt) {
+      systemPrompt = customStylePrompt
+        .replace(/\{\{CHAPTER_NUMBER\}\}/g, String(chapterNumber))
+        .replace(/\{\{FICTION_TYPE\}\}/g, fictionType || "")
+        .replace(/\{\{PERSPECTIVE\}\}/g, perspective || "")
+        .replace(/\{\{WORD_COUNT_MIN\}\}/g, String(wordCountMin))
+        .replace(/\{\{WORD_COUNT_MAX\}\}/g, String(wordCountMax));
+    }
+
     // === ULTRACONTEXT INJECTION (pre-assembled by client, always inject if present) ===
     if (ultraContextInjection) {
       systemPrompt += `\n\nMEMORY CONTEXT (compressed semantic triples — follow precisely):\n${ultraContextInjection}`;
     }
+
 
     let userContent = "";
 
