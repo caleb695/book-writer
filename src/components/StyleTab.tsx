@@ -309,7 +309,17 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
           Authorization: `Bearer ${token}`,
           apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         },
-        body: JSON.stringify({ excerpts: fullText, bookTitle, mode: "structured", contentHash: hash }),
+        body: JSON.stringify({
+          excerpts: fullText,
+          bookTitle,
+          mode: "structured",
+          contentHash: hash,
+          // Send the user's currently active style prompt (custom or default).
+          // The analyzer will inspect it, extract patterns from the new file,
+          // and only ADD instructions for patterns not already covered.
+          currentCustomPrompt: (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt(),
+        }),
+
       });
 
       if (!resp.ok && resp.status !== 202) {
