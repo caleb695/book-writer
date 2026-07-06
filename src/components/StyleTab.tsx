@@ -219,6 +219,22 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               const patternCount = synthesis.patterns?.length || 0;
               const chunksDone = job.chunks_completed || 0;
               toast.success(`${pf.name}: ${patternCount} patterns extracted across ${chunksDone} chunks!`);
+              // If the analyzer produced a merged custom prompt (added new
+              // instructions to the user's existing prompt), persist it.
+              const updatedPrompt = typeof synthesis.updated_custom_prompt === "string"
+                ? synthesis.updated_custom_prompt.trim()
+                : "";
+              if (updatedPrompt) {
+                try {
+                  await onUpdateCustomPrompt(updatedPrompt);
+                  const added = Number(synthesis.custom_prompt_additions ?? 0);
+                  toast.success(added > 0
+                    ? `Style prompt updated with ${added} new instruction${added === 1 ? "" : "s"}.`
+                    : "Style prompt reviewed — no new rules to add.");
+                } catch (e: any) {
+                  console.warn("Failed to save updated custom prompt:", e);
+                }
+              }
               const contradictions: any = job.contradictions;
               if (Array.isArray(contradictions) && contradictions.length > 0) {
                 toast.warning(`${contradictions.length} contradictions detected and resolved.`);
@@ -230,6 +246,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
           setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "done" } : p));
           setTimeout(() => setPendingFiles(prev => prev.filter(p => p.id !== pf.id)), 4000);
         } else if (job.status === "failed") {
+
           setPendingFiles(prev => prev.map(p => p.id === pf.id ? { ...p, status: "error", error: job.error || "Analysis failed" } : p));
           toast.error(`${pf.name}: ${job.error || "Analysis failed"}`);
         }
