@@ -8,6 +8,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import type { UploadedFile } from "@/hooks/useProject";
 import type { StylePattern, StyleMemory } from "@/hooks/useStyleMemory";
+import type { AiSettings } from "@/hooks/useAiSettings";
+import { buildFullSystemPrompt } from "@/lib/systemPromptTemplate";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs`;
 
@@ -19,6 +21,7 @@ interface StyleTabProps {
   stylePatterns: StylePattern[];
   onSaveSynthesis: (synthesis: any, sourceFileId?: string) => Promise<void>;
   onUpdateCustomPrompt: (text: string | null) => Promise<void>;
+  aiSettings: AiSettings;
 }
 
 
