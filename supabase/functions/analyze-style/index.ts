@@ -305,6 +305,100 @@ async function synthesizeChunks(
   return JSON.parse(toolCall.function.arguments);
 }
 
+// Given the user's currently active style prompt (custom or default) and the
+// freshly extracted patterns/synthesis, ask Mistral Large to identify which
+// patterns are NOT already covered in the prompt, then rewrite the prompt to
+// include those missing patterns as IMPERATIVE instructions ("Use short
+// sentences during combat.") — never descriptive commentary ("I noticed short
+// sentences in combat."). Instructions already present are left untouched.
+//
+// Returns { updatedPrompt, additions } where `additions` is a count of newly
+// added instructions. If the current prompt is empty or the AI fails, returns
+// null and the caller keeps the existing prompt.
+async function mergePatternsIntoPrompt(
+  currentPrompt: string,
+  synthesis: any,
+  bookTitle: string,
+  apiKey: string,
+): Promise<{ updatedPrompt: string; additions: number } | null> {
+  const trimmedPrompt = (currentPrompt || "").trim();
+  if (!trimmedPrompt) return null;
+  const patterns = Array.isArray(synthesis?.patterns) ? synthesis.patterns : [];
+  const conventions = Array.isArray(synthesis?.genre_conventions) ? synthesis.genre_conventions : [];
+  const voice = synthesis?.voice_profile || {};
+  if (patterns.length === 0 && conventions.length === 0 && Object.keys(voice).length === 0) return null;
+
+  const patternDump = [
+    ...patterns.map((p: any) => `[${p.category || "pattern"} | conf ${(p.confidence ?? 0).toFixed(2)}] ${p.pattern_text} — check: ${p.checklist_question}`),
+    ...conventions.map((g: any) => `[genre convention] ${g.convention} — check: ${g.checklist_question || ""}`),
+  ].join("\n");
+
+  const sys = `You are updating a novelist's style-prompt so it captures new patterns learned from an example text. Your job:
+
+1. Read the CURRENT PROMPT the writer sends to the model on every chapter.
+2. Read the NEWLY OBSERVED PATTERNS extracted from a new example.
+3. For each observed pattern, decide if the CURRENT PROMPT already tells the model to do that thing (even in different words).
+4. If it does NOT, add a single imperative instruction that would cause the model to produce that pattern.
+5. Preserve the current prompt's structure, headings, and existing text EXACTLY. Only add new lines where appropriate. Do NOT rewrite or rephrase existing rules. Do NOT delete anything.
+6. Add new instructions as bullet points under the MOST RELEVANT existing section (or create a "LEARNED FROM EXAMPLES" section at the end if no existing section fits).
+7. Write instructions in IMPERATIVE form — "Use short punchy sentences during combat scenes." NEVER "I noticed short sentences during combat." Never "The author uses..."
+8. Be specific and mechanical. Include named characters and their speech patterns when relevant. Include approximate frequencies ("include a metaphor roughly once per page") when the pattern is about density.
+9. Do not add instructions for patterns with confidence below 0.5 unless they are unusually specific and useful.
+10. Do not duplicate. If two observed patterns say the same thing, add only one instruction.
+
+Return via the store_updated_prompt tool. Do NOT return plain text.`;
+
+  const tool = {
+    type: "function" as const,
+    function: {
+      name: "store_updated_prompt",
+      description: "Store the updated style prompt with any newly added instructions",
+      parameters: {
+        type: "object",
+        properties: {
+          updated_prompt: { type: "string", description: "The full updated prompt with new instructions added. Existing text preserved verbatim." },
+          additions_count: { type: "integer", description: "Number of NEW instructions you added (0 if the prompt already covered everything)." },
+          added_instructions: { type: "array", items: { type: "string" }, description: "The exact text of each new instruction you added." },
+        },
+        required: ["updated_prompt", "additions_count"],
+      },
+    },
+  };
+
+  const resp = await fetch(API_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: `CURRENT PROMPT:\n\n${trimmedPrompt}\n\n---\n\nNEWLY OBSERVED PATTERNS (from "${bookTitle}"):\n\n${patternDump}\n\nVOICE PROFILE: ${JSON.stringify(voice)}\n\nNow return the updated prompt with any missing instructions added.` },
+      ],
+      tools: [tool],
+      tool_choice: { type: "function", function: { name: "store_updated_prompt" } },
+      temperature: 0.2,
+    }),
+  });
+
+  if (!resp.ok) {
+    console.error("mergePatternsIntoPrompt failed:", resp.status, await resp.text());
+    return null;
+  }
+  const data = await resp.json();
+  const call = data.choices?.[0]?.message?.tool_calls?.[0];
+  if (!call?.function?.arguments) return null;
+  try {
+    const parsed = JSON.parse(call.function.arguments);
+    const updatedPrompt = typeof parsed.updated_prompt === "string" ? parsed.updated_prompt : "";
+    const additions = Number(parsed.additions_count ?? 0);
+    if (!updatedPrompt.trim()) return null;
+    return { updatedPrompt, additions };
+  } catch (e) {
+    console.error("mergePatternsIntoPrompt parse failed:", e);
+    return null;
+  }
+}
+
 // --- Background runner: does the chunk analysis + synthesis and writes
 // progress/result to the style_analysis_jobs row. Runs inside
 // EdgeRuntime.waitUntil so it survives after the HTTP response is sent.
@@ -315,7 +409,9 @@ async function runStructured(
   contentHash: string | null,
   apiKey: string,
   admin: ReturnType<typeof createClient>,
+  currentCustomPrompt: string,
 ) {
+
   const update = (patch: Record<string, unknown>) =>
     admin.from("style_analysis_jobs").update(patch).eq("id", jobId);
 
