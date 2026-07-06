@@ -600,7 +600,9 @@ serve(async (req) => {
         typeof contentHash === "string" ? contentHash : null,
         MISTRAL_API_KEY,
         admin,
+        typeof currentCustomPrompt === "string" ? currentCustomPrompt : "",
       ),
+
     );
 
     return jsonResponse({ jobId: job.id, status: "running" }, 202);
