@@ -528,7 +528,7 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { excerpts, bookTitle, mode, contentHash } = await req.json();
+    const { excerpts, bookTitle, mode, contentHash, currentCustomPrompt } = await req.json();
     const MISTRAL_API_KEY = Deno.env.get("MISTRAL_API_KEY");
     if (!MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY is not configured");
 
