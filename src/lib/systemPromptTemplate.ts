@@ -20,6 +20,7 @@ export interface DefaultPromptOptions {
   wordCountMin?: number;
   wordCountMax?: number;
   styleCache?: string;
+  customPromptAddendum?: string;
   patterns?: Array<{ pattern_text: string; checklist_question: string; confidence: number }>;
   genreConventions?: Array<{ convention: string; checklist_question?: string }>;
   detectedGenre?: string;
@@ -32,6 +33,7 @@ export function buildFullSystemPrompt(opts: DefaultPromptOptions = {}): string {
     wordCountMin = 3500,
     wordCountMax = 4000,
     styleCache = "",
+    customPromptAddendum = "",
     patterns = [],
     genreConventions = [],
     detectedGenre = "",
@@ -96,10 +98,37 @@ SCENE CRAFT
 - Ground every scene in vivid sensory detail from the viewpoint character — sight, sound, smell, touch, taste, temperature, ambient noise.
 - Build tension through pacing: slow down critical moments, let scenes breathe before reveals.
 - Include transitional passages between scenes with atmospheric detail and emotional processing.
-${styleCache ? `\nAUTHOR VOICE PROFILE\n${styleCache.trim()}\n` : ""}${detectedGenre ? `\nGENRE: ${detectedGenre}\n` : ""}${conventionInstructions ? `\nGENRE CONVENTIONS\n${conventionInstructions}\n` : ""}${patternInstructions ? `\nLEARNED STYLE RULES (from the user's style examples)\n${patternInstructions}\n` : ""}
+${styleCache ? `\nAUTHOR VOICE PROFILE\n${styleCache.trim()}\n` : ""}${detectedGenre ? `\nGENRE: ${detectedGenre}\n` : ""}${conventionInstructions ? `\nGENRE CONVENTIONS\n${conventionInstructions}\n` : ""}${patternInstructions ? `\nLEARNED STYLE RULES (from the user's style examples)\n${patternInstructions}\n` : ""}${customPromptAddendum ? `\nUSER STYLE PROMPT ADDITIONS\n${customPromptAddendum.trim()}\n` : ""}
 FINAL REMINDER
 - Output starts with "## Chapter {{CHAPTER_NUMBER}}:" — nothing before it.
 - No commentary, no meta, no notes to the user. Only the story.`;
+}
+
+export function isFullSystemPrompt(prompt?: string | null): boolean {
+  const text = (prompt || "").trim();
+  if (!text) return false;
+  return (
+    text.includes("OUTPUT FORMAT") &&
+    text.includes("CANON FIDELITY") &&
+    text.includes("FINAL REMINDER")
+  );
+}
+
+export interface EffectivePromptOptions extends DefaultPromptOptions {
+  customPrompt?: string | null;
+}
+
+export function buildEffectiveSystemPrompt(opts: EffectivePromptOptions = {}): string {
+  const customPrompt = (opts.customPrompt || "").trim();
+  if (isFullSystemPrompt(customPrompt)) return customPrompt;
+
+  return buildFullSystemPrompt({
+    ...opts,
+    customPromptAddendum: [
+      opts.customPromptAddendum,
+      customPrompt,
+    ].filter(Boolean).join("\n\n"),
+  });
 }
 
 // Rewrite a descriptive pattern ("uses short punchy sentences during combat")
