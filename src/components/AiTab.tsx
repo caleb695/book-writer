@@ -10,6 +10,7 @@ import type { UploadedFile, AiMessage } from "@/hooks/useProject";
 import type { AiSettings } from "@/hooks/useAiSettings";
 import type { StylePattern, StyleMemory, FidelityResult } from "@/hooks/useStyleMemory";
 import { AI_MODELS, FICTION_TYPES, formatContextWindow } from "@/hooks/useAiSettings";
+import { buildFullSystemPrompt } from "@/lib/systemPromptTemplate";
 import {
   Tooltip,
   TooltipContent,
