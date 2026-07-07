@@ -10,6 +10,7 @@ import type { UploadedFile, AiMessage } from "@/hooks/useProject";
 import type { AiSettings } from "@/hooks/useAiSettings";
 import type { StylePattern, StyleMemory, FidelityResult } from "@/hooks/useStyleMemory";
 import { AI_MODELS, FICTION_TYPES, formatContextWindow } from "@/hooks/useAiSettings";
+import { buildFullSystemPrompt } from "@/lib/systemPromptTemplate";
 import {
   Tooltip,
   TooltipContent,
@@ -675,7 +676,22 @@ const AiTab = ({
         fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : undefined,
         partialContent,
         styleGuides: styleGuides.length > 0 ? styleGuides : undefined,
-        customStylePrompt: styleMemory?.custom_prompt || undefined,
+        customStylePrompt: (styleMemory?.custom_prompt && styleMemory.custom_prompt.trim())
+          ? styleMemory.custom_prompt
+          : buildFullSystemPrompt({
+              fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : "",
+              perspective: perspective || "",
+              wordCountMin: parseInt(wordCountMin) || 3500,
+              wordCountMax: parseInt(wordCountMax) || 4000,
+              styleCache: styleMemory?.style_cache || "",
+              patterns: stylePatterns.map(p => ({
+                pattern_text: p.pattern_text,
+                checklist_question: p.checklist_question,
+                confidence: p.confidence,
+              })),
+              genreConventions: styleMemory?.genre_conventions ?? [],
+              detectedGenre: styleMemory?.detected_genre ?? "",
+            }),
         structuredMemory: structuredMemoryPayload,
         checklist: checklistPayload,
         ultraContextInjection: ultraContextInjection || undefined,

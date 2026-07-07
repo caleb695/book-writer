@@ -221,20 +221,14 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               toast.success(`${pf.name}: ${patternCount} patterns extracted across ${chunksDone} chunks!`);
               // If the analyzer produced a merged custom prompt (added new
               // instructions to the user's existing prompt), persist it.
-              const updatedPrompt = typeof synthesis.updated_custom_prompt === "string"
-                ? synthesis.updated_custom_prompt.trim()
-                : "";
-              if (updatedPrompt) {
-                try {
-                  await onUpdateCustomPrompt(updatedPrompt);
-                  const added = Number(synthesis.custom_prompt_additions ?? 0);
-                  toast.success(added > 0
-                    ? `Style prompt updated with ${added} new instruction${added === 1 ? "" : "s"}.`
-                    : "Style prompt reviewed — no new rules to add.");
-                } catch (e: any) {
-                  console.warn("Failed to save updated custom prompt:", e);
-                }
-              }
+              // NOTE: We no longer auto-overwrite the user's saved custom_prompt
+              // from the analyzer's merge output — the LLM merge occasionally
+              // truncated the full prompt down to just the pattern instructions.
+              // Instead, the newly extracted patterns are stored in style_memory
+              // and buildFullSystemPrompt() (in StyleTab + AiTab) dynamically
+              // includes them every time the prompt is rendered/sent. If the
+              // user hasn't saved a custom prompt, the default one always
+              // reflects the latest learned patterns.
               const contradictions: any = job.contradictions;
               if (Array.isArray(contradictions) && contradictions.length > 0) {
                 toast.warning(`${contradictions.length} contradictions detected and resolved.`);
