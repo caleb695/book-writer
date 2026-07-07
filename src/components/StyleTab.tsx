@@ -9,7 +9,7 @@ import { useAuth } from "@/hooks/useAuth";
 import type { UploadedFile } from "@/hooks/useProject";
 import type { StylePattern, StyleMemory } from "@/hooks/useStyleMemory";
 import type { AiSettings } from "@/hooks/useAiSettings";
-import { buildFullSystemPrompt } from "@/lib/systemPromptTemplate";
+import { buildEffectiveSystemPrompt } from "@/lib/systemPromptTemplate";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs`;
 
@@ -113,11 +113,13 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   const styleFiles = files.filter(f => f.file_type === "style");
   const isProcessing = pendingFiles.some(f => ["extracting", "analyzing", "synthesizing"].includes(f.status));
 
-  // Full default prompt = every static instruction the model receives,
-  // seeded with the learned patterns/style_cache. The user can edit this
-  // freely — whatever they save is used verbatim.
+  // Full effective prompt = every static instruction the Kaggle model receives,
+  // seeded with learned patterns/style_cache. Older saved prompts that only
+  // contain extracted patterns are preserved as additions instead of replacing
+  // the structured Kaggle prompt.
   const buildDefaultPrompt = useCallback(() => {
-    return buildFullSystemPrompt({
+    return buildEffectiveSystemPrompt({
+      customPrompt: styleMemory?.custom_prompt || null,
       fictionType: aiSettings.fiction_type_enabled ? aiSettings.fiction_type : "",
       perspective: aiSettings.perspective || "",
       wordCountMin: aiSettings.word_count_min,
@@ -134,7 +136,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
   }, [styleMemory, stylePatterns, aiSettings]);
 
   const openPromptEditor = () => {
-    const initial = (styleMemory?.custom_prompt || "").trim() || buildDefaultPrompt();
+    const initial = buildDefaultPrompt();
     setPromptDraft(initial);
     setPromptEditorOpen(true);
   };
@@ -403,7 +405,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               </span>
             )}
           </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">{styleMemory.custom_prompt || styleMemory.style_cache}</p>
+          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-6 whitespace-pre-wrap">{buildDefaultPrompt()}</p>
           <div className="flex gap-4 text-[10px] text-muted-foreground">
             <span>{activePatterns.length} active patterns</span>
             <span>{dormantPatterns.length} dormant</span>
@@ -421,7 +423,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               <h3 className="text-sm font-medium">Edit Style Prompt</h3>
               <button onClick={() => setPromptEditorOpen(false)} className="ml-auto text-muted-foreground hover:text-foreground text-xs">Close</button>
             </div>
-            <p className="text-[11px] text-muted-foreground">This exact text is injected into every chapter generation (Kaggle and cloud models). Plain paragraph — no markdown needed.</p>
+            <p className="text-[11px] text-muted-foreground">This is the full structured prompt sent to Kaggle chapter models. Save edits here to change the prompt Kaggle receives; uploaded style patterns are additions, not replacements.</p>
             <textarea
               value={promptDraft}
               onChange={e => setPromptDraft(e.target.value)}
@@ -429,7 +431,7 @@ const StyleTab = ({ files, onUpload, onDelete, styleMemory, stylePatterns, onSav
               placeholder="Describe the exact writing style, voice, and rules the AI must follow…"
             />
             <div className="flex items-center gap-2 justify-end">
-              <button onClick={resetPrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Reset from patterns</button>
+              <button onClick={resetPrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Reset to full Kaggle prompt</button>
               <button onClick={() => { setPromptDraft(""); }} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent disabled:opacity-50">Clear</button>
               <button onClick={savePrompt} disabled={savingPrompt} className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
                 {savingPrompt ? "Saving…" : "Save"}
