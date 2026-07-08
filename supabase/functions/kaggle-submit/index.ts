@@ -70,8 +70,8 @@ const DOWNLOAD_KERNEL_SLUGS: Record<string, string> = {
   "fallenmerick-mn-violet-lotus-12b": "loomink-dl-fallenmerick-mn-violet-lotus-12b",
   "davidau-lfm2-5-1-2b-thinking-claude-4-6-opus": "loomink-dl-davidau-lfm2-5-1-2b-thinking-claude-4-6",
   "davidau-llama-3-2-8x3b-moe-dark-champion": "loomink-dl-davidau-llama-3-2-8x3b-moe-dark-champio",
-"nanovel-27b": "loomink-dl-nanovel",
-"the-creative-wordsmith-31b": "loomink-dl-the-creative-wordsmith-31b",
+  "nanovel-27b": "loomink-dl-nanovel",
+  "the-creative-wordsmith-31b": "loomink-dl-the-creative-wordsmith-31b",
 };
 
 function json(body: unknown, status = 200) {
