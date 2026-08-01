@@ -17,7 +17,18 @@ export function useAuth() {
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session) {
+        // Validate against the auth server: remixed projects can hold a token
+        // signed by a different project (bad_jwt), which must be discarded.
+        const { error } = await supabase.auth.getUser();
+        if (error) {
+          await supabase.auth.signOut();
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+      }
       setUser(session?.user ?? null);
       setLoading(false);
     });
