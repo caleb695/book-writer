@@ -255,6 +255,27 @@ export type Database = {
         }
         Relationships: []
       }
+      "keep-alive": {
+        Row: {
+          created_at: string | null
+          id: number
+          name: string
+          random: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: never
+          name: string
+          random: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: never
+          name?: string
+          random?: string
+        }
+        Relationships: []
+      }
       memory_triples: {
         Row: {
           category: string
