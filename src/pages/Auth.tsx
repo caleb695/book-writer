@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
+// Supabase rejects reserved/invalid TLDs like ".local", so use a real domain
 const toFakeEmail = (username: string) =>
-  `${username.toLowerCase().trim()}@loomink.local`;
+  `${username.toLowerCase().trim().replace(/[^a-z0-9._-]/g, "")}@loomink.app`;
 
 const Auth = () => {
   const [isSignUp, setIsSignUp] = useState(false);
