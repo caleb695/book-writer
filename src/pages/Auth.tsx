@@ -23,10 +23,11 @@ const Auth = () => {
     const fakeEmail = toFakeEmail(username);
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email: fakeEmail,
           password,
           options: {
+            emailRedirectTo: window.location.origin,
             data: { display_name: username.trim() },
           },
         });
@@ -34,7 +35,25 @@ const Auth = () => {
           if (error.message?.includes("already been registered")) {
             throw new Error("Username is already taken.");
           }
+          if (error.message?.toLowerCase().includes("rate limit")) {
+            throw new Error(
+              "Sign-ups are temporarily rate limited. Please wait a minute and try again."
+            );
+          }
           throw error;
+        }
+        if (!data.session) {
+          // Email confirmation is on, but usernames have no real inbox.
+          // Try signing straight in — works once confirmations are disabled.
+          const { error: signInError } = await supabase.auth.signInWithPassword({
+            email: fakeEmail,
+            password,
+          });
+          if (signInError) {
+            throw new Error(
+              "Account created, but sign-in is blocked by email confirmation. Disable 'Confirm email' in Supabase Auth settings."
+            );
+          }
         }
         toast.success("Account created! You're now signed in.");
       } else {
@@ -50,7 +69,7 @@ const Auth = () => {
         }
       }
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message || "Something went wrong");
     } finally {
       setLoading(false);
     }
