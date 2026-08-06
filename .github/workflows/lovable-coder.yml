@@ -1,4 +1,5 @@
-name: Lovable Coder
+name: Coderbot
+# Installed by Coderbot — runner version 5
 on:
   repository_dispatch:
     types: [lovable-coding-job]
@@ -20,7 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Run Lovable coder
+      - name: Run Coderbot
         env:
           JOB_ID: ${{ github.event.client_payload.job_id }}
           JOB_SECRET: ${{ github.event.client_payload.job_secret }}
