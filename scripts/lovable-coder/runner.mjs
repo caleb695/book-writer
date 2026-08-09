@@ -15,8 +15,25 @@ const BRANCH = process.env.WORKING_BRANCH;
 if (!JOB_ID || !JOB_SECRET || !APP_URL) { console.error("missing env"); process.exit(1); }
 
 const HEAD = { "Content-Type": "application/json", "X-Job-Id": JOB_ID, "X-Job-Secret": JOB_SECRET };
-const api = (p, body) => fetch(APP_URL + p, { method: "POST", headers: HEAD, body: JSON.stringify(body ?? {}) })
-  .then(async (r) => { if (!r.ok) throw new Error(p + " " + r.status + " " + (await r.text())); return r.json(); });
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function api(p, body) {
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const r = await fetch(APP_URL + p, { method: "POST", headers: HEAD, body: JSON.stringify(body ?? {}) });
+      if (r.ok) return r.json();
+      const text = await r.text();
+      const error = new Error(p + " " + r.status + " " + text);
+      if (r.status !== 429 && r.status < 500) throw error;
+      lastError = error;
+    } catch (e) {
+      lastError = e;
+      if (attempt === 5) break;
+    }
+    await delay(Math.min(30000, 1000 * (2 ** attempt)) + Math.floor(Math.random() * 500));
+  }
+  throw lastError || new Error(p + " failed after retries");
+}
 
 const log = async (line) => { console.log(line); try { await api("/api/public/jobs/log", { line }); } catch {} };
 
@@ -68,19 +85,31 @@ let TODOS = [];
 const tools = [
   { type: "function", function: { name: "list_files", description: "List repository files. Optional substring filter on the path.",
     parameters: { type: "object", properties: { filter: { type: "string" } } } } },
-  { type: "function", function: { name: "read_file", description: "Read a text file from the repo.",
-    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-  { type: "function", function: { name: "search_code", description: "Search the repo for a regular expression. Returns path:line matches.",
-    parameters: { type: "object", properties: { query: { type: "string" }, max_results: { type: "number" } }, required: ["query"] } } },
+  { type: "function", function: { name: "glob", description: "Find files by glob pattern (e.g. 'src/**/*.tsx', '**/*.test.ts'). Faster than list_files for targeted lookups.",
+    parameters: { type: "object", properties: { pattern: { type: "string" }, max_results: { type: "number" } }, required: ["pattern"] } } },
+  { type: "function", function: { name: "read_file", description: "Read a text file. Optionally read a slice with `offset` (1-based start line) and `limit` (line count). Output is line-numbered.",
+    parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
+  { type: "function", function: { name: "read_files", description: "Read several files at once. Use this instead of many read_file calls when exploring.",
+    parameters: { type: "object", properties: { paths: { type: "array", items: { type: "string" } } }, required: ["paths"] } } },
+  { type: "function", function: { name: "search_code", description: "Search the repo for a regular expression. Returns path:line matches. Optional `path_filter` substring and `context` lines.",
+    parameters: { type: "object", properties: { query: { type: "string" }, max_results: { type: "number" }, path_filter: { type: "string" }, context: { type: "number" } }, required: ["query"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a file with the COMPLETE new contents.",
     parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Replace an exact substring in a file. Prefer this for small edits.",
     parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "find", "replace"] } } },
+  { type: "function", function: { name: "multi_edit", description: "Apply several find/replace edits, optionally across several files, in one atomic call. All edits must match or none are applied.",
+    parameters: { type: "object", properties: { edits: { type: "array", items: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "find", "replace"] } } }, required: ["edits"] } } },
   { type: "function", function: { name: "delete_file", description: "Delete a file.",
     parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-  { type: "function", function: { name: "run_shell", description: "Run a shell command from the repo root. Returns combined output (truncated).",
-    parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } } },
-  { type: "function", function: { name: "check_code", description: "Verify your work: runs the project's typecheck/lint/test scripts when they exist, plus static checks on changed files. Call this after editing and fix anything it reports.",
+  { type: "function", function: { name: "move_file", description: "Rename or move a file, creating parent directories as needed.",
+    parameters: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } } },
+  { type: "function", function: { name: "run_shell", description: "Run a shell command from the repo root. Returns combined output (truncated). Optional timeout_seconds (default 300, max 900).",
+    parameters: { type: "object", properties: { cmd: { type: "string" }, timeout_seconds: { type: "number" } }, required: ["cmd"] } } },
+  { type: "function", function: { name: "git_diff", description: "Show the diff of your uncommitted work so far. Optional path to scope it.",
+    parameters: { type: "object", properties: { path: { type: "string" } } } } },
+  { type: "function", function: { name: "fetch_url", description: "Fetch a URL and return its text (HTML stripped, truncated). Use for docs and API references.",
+    parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } } },
+  { type: "function", function: { name: "check_code", description: "Verify your work: runs the project's typecheck/lint/test/build scripts when they exist, plus static checks on changed files. Call this after editing and fix anything it reports.",
     parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "update_plan", description: "Record or update your task list so the user can follow along. Each item has a title and a status of pending, in_progress or done.",
     parameters: { type: "object", properties: { todos: { type: "array", items: { type: "object", properties: { title: { type: "string" }, status: { type: "string" } }, required: ["title", "status"] } } }, required: ["todos"] } } },
@@ -90,18 +119,60 @@ const tools = [
 
 const DELEGATE_TOOL = { type: "function", function: {
   name: "delegate",
-  description: "Hand a self-contained part of the task to one of your sub-agents. It has the same file tools on this same checkout and runs to completion before returning its report. Never give two sub-agents the same files.",
+  description: "Hand a self-contained part of the task to one of your sub-agents. It has the same file tools on this same checkout. Issue SEVERAL delegate calls in the SAME turn to run sub-agents in parallel. Never give two sub-agents the same files.",
   parameters: { type: "object", properties: {
     agent_id: { type: "string" },
     task: { type: "string", description: "Complete, self-contained instructions: what to change, which files, and how to verify." },
+    files: { type: "array", items: { type: "string" }, description: "Files this sub-agent owns. Used to stop two sub-agents editing the same file." },
   }, required: ["agent_id", "task"] },
 } };
+
+/* Read-only tools can safely run at the same time within one assistant turn. */
+const READ_ONLY_TOOLS = new Set(["list_files", "glob", "read_file", "read_files", "search_code", "git_diff", "fetch_url"]);
 
 /* Tools available to the model this step. `finish` and `delegate` are main-agent only. */
 function toolsFor(kind, subAgents) {
   if (kind === "sub") return tools.filter((t) => t.function.name !== "finish");
   return subAgents && subAgents.length ? [...tools, DELEGATE_TOOL] : tools;
 }
+
+// Sub-agents reason in parallel, while checkout mutations and commands are
+// serialized. This keeps their speed advantage without corrupting shared files
+// or running builds against half-written code.
+let mutationQueue = Promise.resolve();
+function serialized(task) {
+  const next = mutationQueue.then(task, task);
+  mutationQueue = next.catch(() => {});
+  return next;
+}
+
+/* A cheap orientation pass so the model doesn't burn steps discovering the
+ * basics: project type, scripts, top-level layout and any agent instructions. */
+function repoBriefing() {
+  const parts = [];
+  try {
+    const top = fs.readdirSync(".", { withFileTypes: true })
+      .filter((d) => !d.name.startsWith(".git") && d.name !== "node_modules")
+      .map((d) => d.name + (d.isDirectory() ? "/" : ""))
+      .slice(0, 80);
+    parts.push("Top level: " + top.join(" "));
+  } catch {}
+  try {
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    parts.push("package.json name: " + (pkg.name || "?"));
+    if (pkg.scripts) parts.push("Scripts: " + Object.keys(pkg.scripts).join(", "));
+    const deps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) });
+    if (deps.length) parts.push("Dependencies: " + deps.slice(0, 60).join(", "));
+    parts.push("node_modules is " + (fs.existsSync("node_modules") ? "present" : "NOT installed — run `npm install` (or the matching package manager) with run_shell before any build/test command"));
+  } catch {}
+  for (const f of ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"]) {
+    try {
+      if (fs.existsSync(f)) parts.push("--- " + f + " (follow these repo instructions) ---\n" + fs.readFileSync(f, "utf8").slice(0, 6000));
+    } catch {}
+  }
+  return "Repository briefing (gathered automatically, no tool call needed):\n" + parts.join("\n");
+}
+
 
 function changedFiles() {
   try {
@@ -141,40 +212,97 @@ function runCheckCode() {
 
   const scripts = pkgScripts();
   const ran = [];
-  for (const name of ["typecheck", "tsc", "lint", "test"]) {
-    if (!scripts[name]) continue;
-    ran.push(name);
-    try { sh("npm run " + name + " --silent"); }
-    catch (e) {
-      const out = ((e.stdout || "") + (e.stderr || "")).toString().slice(-4000);
-      problems.push("npm run " + name + " failed:\n" + out);
+  const hasNodeModules = fs.existsSync("node_modules");
+  const candidates = ["typecheck", "tsc", "lint", "test", "build"].filter((n) => scripts[n]);
+  if (candidates.length && !hasNodeModules) {
+    problems.push("Dependencies are not installed, so " + candidates.join("/") + " could not run. Run `npm ci || npm install` with run_shell first if you need real verification.");
+  } else {
+    for (const name of candidates) {
+      // `build` is slow; only run it when nothing cheaper exists.
+      if (name === "build" && ran.length) continue;
+      ran.push(name);
+      try { sh("npm run " + name + " --silent", { timeout: 1000 * 60 * 12 }); }
+      catch (e) {
+        const out = ((e.stdout || "") + (e.stderr || "")).toString().slice(-4000);
+        problems.push("npm run " + name + " failed:\n" + out);
+      }
     }
   }
   return { changed: files, ran, problems, clean: problems.length === 0 };
 }
 
-function execTool(name, args) {
+/* Simple glob → RegExp (supports **, *, ?). */
+function globToRe(pattern) {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") { out += ".*"; i++; if (pattern[i + 1] === "/") i++; }
+      else out += "[^/]*";
+    } else if (ch === "?") out += "[^/]";
+    else out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp("^" + out + "$");
+}
+
+function numbered(content, offset = 1) {
+  return content.split("\n").map((l, i) => (i + offset) + "\t" + l).join("\n");
+}
+
+async function execTool(name, args) {
   try {
     if (name === "list_files") {
       let files = walk(process.cwd()).map((f) => f.path);
       if (args.filter) files = files.filter((f) => f.includes(args.filter));
       return files.slice(0, 800).join("\n") || "(no files)";
     }
-    if (name === "read_file") { const c = readFileSafe(args.path); return c == null ? "ERR: not found" : c.slice(0, 60000); }
+    if (name === "glob") {
+      const re = globToRe(String(args.pattern || "**"));
+      const hits = walk(process.cwd()).map((f) => f.path).filter((p) => re.test(p));
+      return hits.slice(0, Math.min(args.max_results || 300, 1000)).join("\n") || "(no matches)";
+    }
+    if (name === "read_file") {
+      const c = readFileSafe(args.path);
+      if (c == null) return "ERR: not found";
+      if (args.offset || args.limit) {
+        const start = Math.max(1, Math.floor(args.offset || 1));
+        const lines = c.split("\n").slice(start - 1, start - 1 + Math.max(1, Math.floor(args.limit || 200)));
+        return numbered(lines.join("\n"), start).slice(0, 60000);
+      }
+      return numbered(c).slice(0, 60000);
+    }
+    if (name === "read_files") {
+      const paths = Array.isArray(args.paths) ? args.paths.slice(0, 20) : [];
+      return paths.map((p) => {
+        const c = readFileSafe(p);
+        return "--- " + p + " ---\n" + (c == null ? "(not found)" : c.slice(0, 20000));
+      }).join("\n\n").slice(0, 80000) || "ERR: no paths given";
+    }
     if (name === "search_code") {
       let re; try { re = new RegExp(args.query, "i"); } catch (e) { return "ERR: bad pattern " + e.message; }
       const limit = Math.min(args.max_results || 60, 200);
+      const ctx = Math.min(Math.max(args.context || 0, 0), 4);
       const hits = [];
       for (const f of walk(process.cwd())) {
+        if (args.path_filter && !f.path.includes(args.path_filter)) continue;
         const c = readFileSafe(f.path);
         if (c == null) continue;
         const lines = c.split("\n");
         for (let i = 0; i < lines.length; i++) {
-          if (re.test(lines[i])) { hits.push(f.path + ":" + (i + 1) + ": " + lines[i].slice(0, 200).trim()); if (hits.length >= limit) break; }
+          if (re.test(lines[i])) {
+            if (ctx) {
+              const from = Math.max(0, i - ctx);
+              const to = Math.min(lines.length, i + ctx + 1);
+              hits.push(f.path + ":" + (i + 1) + "\n" + lines.slice(from, to).map((l, k) => (from + k + 1) + "\t" + l.slice(0, 200)).join("\n"));
+            } else {
+              hits.push(f.path + ":" + (i + 1) + ": " + lines[i].slice(0, 200).trim());
+            }
+            if (hits.length >= limit) break;
+          }
         }
         if (hits.length >= limit) break;
       }
-      return hits.join("\n") || "(no matches)";
+      return hits.join("\n").slice(0, 40000) || "(no matches)";
     }
     if (name === "write_file") { writeFileSafe(args.path, args.content ?? ""); return "OK wrote " + args.path; }
     if (name === "edit_file") {
@@ -185,8 +313,46 @@ function execTool(name, args) {
       writeFileSafe(args.path, next);
       return "OK edited " + args.path;
     }
+    if (name === "multi_edit") {
+      const edits = Array.isArray(args.edits) ? args.edits : [];
+      if (!edits.length) return "ERR: no edits given";
+      const staged = new Map();
+      for (const e of edits) {
+        const current = staged.has(e.path) ? staged.get(e.path) : readFileSafe(e.path);
+        if (current == null) return "ERR: not found: " + e.path + " (no edits applied)";
+        if (!current.includes(e.find)) return "ERR: `find` text not present in " + e.path + " (no edits applied) — read the file again";
+        staged.set(e.path, e.replace_all ? current.split(e.find).join(e.replace) : current.replace(e.find, e.replace));
+      }
+      for (const [p, content] of staged) writeFileSafe(p, content);
+      return "OK applied " + edits.length + " edits to " + [...staged.keys()].join(", ");
+    }
     if (name === "delete_file") { fs.unlinkSync(args.path); return "OK deleted " + args.path; }
-    if (name === "run_shell") { return sh(args.cmd).slice(0, 8000) || "(no output)"; }
+    if (name === "move_file") {
+      const c = readFileSafe(args.from);
+      if (c == null) return "ERR: not found: " + args.from;
+      writeFileSafe(args.to, c);
+      fs.unlinkSync(args.from);
+      return "OK moved " + args.from + " → " + args.to;
+    }
+    if (name === "run_shell") {
+      const secs = Math.min(Math.max(Math.floor(args.timeout_seconds || 300), 1), 900);
+      return sh(args.cmd, { timeout: secs * 1000 }).slice(0, 12000) || "(no output)";
+    }
+    if (name === "git_diff") {
+      const out = sh("git --no-pager diff -- " + (args.path ? JSON.stringify(args.path) : "."));
+      const untracked = sh("git ls-files --others --exclude-standard").trim();
+      return ((out || "(no tracked changes)") + (untracked ? "\n\nUntracked files:\n" + untracked : "")).slice(0, 30000);
+    }
+    if (name === "fetch_url") {
+      const res = await fetch(String(args.url), { headers: { "User-Agent": "coderbot-runner" } });
+      const text = await res.text();
+      const clean = text
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s{2,}/g, " ");
+      return ("HTTP " + res.status + "\n" + clean).slice(0, 20000);
+    }
     if (name === "check_code") { return JSON.stringify(runCheckCode()).slice(0, 12000); }
     if (name === "update_plan") { TODOS = Array.isArray(args.todos) ? args.todos : []; return "OK"; }
     return "ERR: unknown tool";
@@ -206,28 +372,107 @@ function chatRoute(spec, model) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* Per-minute rate limits: wait 10s and retry, forever. Any other limit
- * (quota / credits / context) stops the run with the provider's message. */
+/* Per-minute rate limits: wait 10s and retry (up to ~50 minutes of waiting).
+ * Transient network/5xx failures back off and retry a few times.
+ * Any other limit (quota / credits / context) stops the run with the
+ * provider's message. */
 async function callModel(spec, messages, opts = {}) {
   const route = chatRoute(spec, opts.model || spec.model);
   const activeTools = opts.tools || toolsFor("main", spec.sub_agents);
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(route.base + "/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + route.key },
-      body: JSON.stringify({ model: route.model, messages, tools: activeTools, tool_choice: "auto" }),
-    });
-    if (res.ok) return res.json();
+  let rpmWaits = 0;
+  let transient = 0;
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(route.base + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + route.key },
+        body: JSON.stringify(activeTools && activeTools.length
+          ? { model: route.model, messages, tools: activeTools, tool_choice: "auto" }
+          : { model: route.model, messages }),
+      });
+    } catch (e) {
+      if (++transient > 6) throw new Error("Network error talking to the model provider: " + ((e && e.message) || e));
+      await sleep(Math.min(30000, 2000 * transient));
+      continue;
+    }
+    if (res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body && body.choices && body.choices.length) return body;
+      if (body && body.error) throw new Error("Provider error: " + JSON.stringify(body.error).slice(0, 600));
+      if (++transient > 6) throw new Error("The model returned an empty response repeatedly.");
+      await sleep(2000 * transient);
+      continue;
+    }
     const text = (await res.text()).slice(0, 800);
     const isRpm = res.status === 429 && (/per.?minute|rpm|requests per|rate.?limit/i.test(text) || !/quota|credit|balance|billing/i.test(text));
-    if (isRpm && attempt < 300) {
-      await event("status", "Rate limited — waiting 10 seconds, then retrying.", undefined, opts.agent);
-      await sleep(10000);
+    if (isRpm) {
+      if (++rpmWaits <= 300) {
+        if (rpmWaits === 1 || rpmWaits % 6 === 0) {
+          await event("status", "Rate limited — waiting and retrying (" + rpmWaits * 10 + "s so far).", undefined, opts.agent);
+        }
+        await sleep(10000);
+        continue;
+      }
+      throw new Error("Still rate limited after 50 minutes of retrying. Stopping — try again later or use a model with a higher rate limit.");
+    }
+    if (res.status >= 500 || res.status === 408) {
+      if (++transient > 6) throw new Error("Provider error " + res.status + ": " + text);
+      await sleep(Math.min(30000, 2000 * transient));
       continue;
     }
     throw new Error("Provider error " + res.status + ": " + text);
   }
 }
+
+/* --------------------------- context management --------------------------- */
+
+const approxTokens = (messages) => Math.round(JSON.stringify(messages).length / 4);
+const COMPACT_AT_TOKENS = 90000;
+
+/* Claude-Code-style compaction: when the transcript gets long, fold the older
+ * middle of the conversation into a summary so the run can keep going without
+ * blowing the model's context window. */
+async function compactIfNeeded(spec, messages, agent) {
+  if (approxTokens(messages) < COMPACT_AT_TOKENS) return messages;
+  // Keep the system prompt, the first user turn, and the most recent exchanges.
+  const head = messages.slice(0, 2);
+  const keepTail = 12;
+  const middle = messages.slice(2, Math.max(2, messages.length - keepTail));
+  let tail = messages.slice(Math.max(2, messages.length - keepTail));
+  // A tool message must follow its assistant tool_calls message; drop orphans.
+  while (tail.length && tail[0].role === "tool") tail = tail.slice(1);
+  if (middle.length < 4) return messages;
+
+  await event("status", "Context is getting long — summarising earlier work to keep going.", undefined, agent);
+  const transcript = middle.map((m) => {
+    const calls = (m.tool_calls || []).map((c) => c.function.name + "(" + String(c.function.arguments || "").slice(0, 200) + ")").join(", ");
+    return m.role + ": " + String(typeof m.content === "string" ? m.content : "").slice(0, 1200) + (calls ? " [tools: " + calls + "]" : "");
+  }).join("\n").slice(0, 120000);
+
+  let summary = "";
+  try {
+    const body = await callModel(spec, [
+      { role: "system", content: "You compress an autonomous coding agent's transcript. Output a dense hand-off note: the goal, what was discovered about the codebase (files, symbols, decisions), every file already changed and how, what verification was run and its result, and what remains. No preamble." },
+      { role: "user", content: transcript },
+    ], { model: opts_model(spec, agent), tools: [], agent });
+    summary = (body.choices[0].message.content || "").trim();
+  } catch (e) {
+    await log("compaction failed: " + ((e && e.message) || e));
+    return messages;
+  }
+  if (!summary) return messages;
+  return [
+    ...head,
+    { role: "user", content: "[Earlier work in this run, compacted]\n" + summary + "\n\nContinue from here." },
+    ...tail,
+  ];
+}
+
+function opts_model(spec, agent) {
+  return agent && agent.model ? agent.model : spec.model;
+}
+
 
 /* Providers such as Groq reject assistant messages that carry extra fields
  * (e.g. `reasoning`, `executed_tools`) back on the next request, so only echo
@@ -255,16 +500,39 @@ function trimForCheckpoint(messages) {
 
 function verb(name, args) {
   if (name === "read_file") return "Read " + args.path;
+  if (name === "read_files") return "Read " + (args.paths || []).join(", ").slice(0, 120);
   if (name === "list_files") return "Listed the repository files";
+  if (name === "glob") return "Looked for files matching " + args.pattern;
   if (name === "search_code") return 'Searched for "' + String(args.query || "").slice(0, 60) + '"';
   if (name === "write_file") return "Wrote " + args.path;
   if (name === "edit_file") return "Edited " + args.path;
+  if (name === "multi_edit") return "Edited " + [...new Set((args.edits || []).map((e) => e.path))].join(", ").slice(0, 140);
   if (name === "delete_file") return "Deleted " + args.path;
+  if (name === "move_file") return "Moved " + args.from + " → " + args.to;
   if (name === "run_shell") return "Ran " + String(args.cmd || "").slice(0, 90);
+  if (name === "git_diff") return "Reviewed my diff so far";
+  if (name === "fetch_url") return "Fetched " + String(args.url || "").slice(0, 80);
   if (name === "check_code") return "Checked the code I changed for problems";
   if (name === "update_plan") return "Updated the plan: " + (args.todos || []).map((t) => t.title).join(" · ").slice(0, 200);
   if (name === "delegate") return "Delegated to " + (args.agent_id || "a sub-agent");
   return name;
+}
+
+const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "delete_file", "move_file"]);
+
+/* Files each sub-agent has been given, so two agents never edit the same file. */
+const FILE_OWNER = new Map();
+function claimFiles(agentId, files) {
+  const clashes = [];
+  for (const f of files || []) {
+    const owner = FILE_OWNER.get(f);
+    if (owner && owner !== agentId) clashes.push(f + " (already owned by " + owner + ")");
+    else FILE_OWNER.set(f, agentId);
+  }
+  return clashes;
+}
+function releaseFiles(agentId) {
+  for (const [f, owner] of [...FILE_OWNER]) if (owner === agentId) FILE_OWNER.delete(f);
 }
 
 function phaseFor(name, sawCheck) {
@@ -320,40 +588,81 @@ function attachmentMessages(readable) {
 }
 
 /* A sub-agent: same tools, same checkout, its own model and activity feed. */
-async function runSubAgent(spec, agent, task) {
+async function runSubAgent(spec, agent, task, ownFiles) {
+  const scopedAgent = { ...agent, ownFiles: Array.isArray(ownFiles) ? ownFiles : [] };
   const subTools = toolsFor("sub", spec.sub_agents);
-  const messages = [
+  let messages = [
     { role: "system", content:
-      "You are " + agent.label + ", a sub-agent of Coderbot working inside GitHub Actions on the repository checkout. " +
-      "Do only the part of the task you were given — do not touch unrelated files, do not commit. " +
+      "You are " + agent.label + ", a sub-agent of Coderbot working inside GitHub Actions on the repository checkout at " +
+      (spec.repo ? spec.repo.owner + "/" + spec.repo.name : "this repo") + ". " +
+      "Do only the part of the task you were given — do not touch unrelated files, do not commit, do not delegate. " +
+      (ownFiles && ownFiles.length ? "You own these files; do not edit any others: " + ownFiles.join(", ") + ". " : "") +
+      "Other sub-agents may be working on other files in this same checkout at the same time, so never reformat or rewrite files outside your scope. " +
       (agent.instructions ? "Your standing scope: " + agent.instructions + ". " : "") +
-      "Use your tools to read, search, write and edit files, then run check_code and fix what it reports. " +
-      "When your part is done, reply with a plain-text report of exactly what you changed (no tool call)." },
+      "Work efficiently: batch reads with read_files, use search_code/glob to locate things, prefer edit_file or multi_edit over rewriting whole files. " +
+      "Verify with check_code (or a targeted run_shell command) and fix what it reports. " +
+      "When your part is done, reply with a plain-text report of exactly which files you changed and how (no tool call)." },
     { role: "user", content: task },
   ];
   await event("status", "Started on: " + String(task).slice(0, 160), "coding", agent);
-  for (let step = 0; step < 60; step++) {
-    const body = await callModel(spec, messages, { model: agent.model, tools: subTools, agent });
+  for (let step = 0; step < 80; step++) {
+    messages = await compactIfNeeded(spec, messages, agent);
+    const body = await callModel(spec, messages, { model: agent.model, tools: subTools, agent: scopedAgent });
     const msg = body.choices && body.choices[0] && body.choices[0].message;
     if (!msg) return "Sub-agent " + agent.id + " returned no message.";
     messages.push(sanitizeAssistant(msg));
-    if (msg.content && String(msg.content).trim()) await event("thought", String(msg.content).trim().slice(0, 800), undefined, agent);
+    if (msg.content && String(msg.content).trim()) await event("thought", String(msg.content).trim().slice(0, 800), undefined, scopedAgent);
     const calls = msg.tool_calls || [];
     if (!calls.length) {
       await event("status", "Finished its part.", "done", agent);
       return String(msg.content || "Done.").slice(0, 6000);
     }
-    for (const c of calls) {
-      let args = {};
-      try { args = JSON.parse((c.function && c.function.arguments) || "{}"); } catch {}
-      const name = c.function.name;
-      await event("action", verb(name, args), undefined, agent);
-      const out = name === "delegate" ? "ERR: sub-agents cannot delegate" : execTool(name, args);
-      messages.push({ role: "tool", tool_call_id: c.id, content: String(out).slice(0, 40000) });
-    }
+    const results = await runToolCalls(calls, scopedAgent, () => {});
+    for (const c of calls) messages.push({ role: "tool", tool_call_id: c.id, content: results.get(c.id) });
   }
   await event("status", "Hit its step limit.", "done", agent);
   return "Sub-agent " + agent.id + " hit its step limit; check its work.";
+}
+
+/* Execute one assistant turn's tool calls. Read-only calls run concurrently,
+ * writes and shell commands run in order so they can't race each other. */
+async function runToolCalls(calls, agent, onTool) {
+  const results = new Map();
+  const parse = (c) => { try { return JSON.parse((c.function && c.function.arguments) || "{}"); } catch { return {}; } };
+
+  const reads = calls.filter((c) => READ_ONLY_TOOLS.has(c.function.name));
+  const rest = calls.filter((c) => !READ_ONLY_TOOLS.has(c.function.name));
+
+  await Promise.all(reads.map(async (c) => {
+    const args = parse(c);
+    await event("action", verb(c.function.name, args), undefined, agent);
+    onTool(c.function.name, args);
+    results.set(c.id, String(await execTool(c.function.name, args)).slice(0, 40000));
+  }));
+
+  for (const c of rest) {
+    const args = parse(c);
+    const name = c.function.name;
+    if (name === "delegate") { results.set(c.id, "ERR: sub-agents cannot delegate"); continue; }
+    if (agent && WRITE_TOOLS.has(name) && agent.ownFiles && agent.ownFiles.length) {
+      const requested = name === "multi_edit" ? (args.edits || []).map((e) => e.path)
+        : name === "move_file" ? [args.from, args.to]
+        : [args.path];
+      const outside = requested.filter((p) => p && !agent.ownFiles.includes(p));
+      if (outside.length) {
+        results.set(c.id, "ERR: outside your assigned files: " + outside.join(", "));
+        continue;
+      }
+    }
+    await event("action", verb(name, args), undefined, agent);
+    onTool(name, args);
+    const run = () => execTool(name, args);
+    const output = WRITE_TOOLS.has(name) || name === "run_shell" || name === "check_code"
+      ? await serialized(run)
+      : await run();
+    results.set(c.id, String(output).slice(0, 40000));
+  }
+  return results;
 }
 
 async function main() {
@@ -365,7 +674,7 @@ async function main() {
 
   const resumed = spec.checkpoint && Array.isArray(spec.checkpoint.messages) && spec.checkpoint.messages.length > 0;
   const readable = resumed ? [] : await fetchAttachments(spec);
-  const messages = resumed
+  let messages = resumed
     ? spec.checkpoint.messages
     : [{ role: "system", content: spec.system }, ...attachmentMessages(readable), ...spec.messages];
   const subAgents = spec.sub_agents || [];
@@ -374,6 +683,7 @@ async function main() {
     messages.push({ role: "user", content: "The previous run hit the GitHub Actions time limit and was checkpointed. Your uncommitted work was pushed to the branch and is present in this checkout. Continue where you left off until the task is complete." });
     await event("status", "Resumed after checkpoint — continuing the task.", "coding");
   } else {
+    messages.splice(1, 0, { role: "user", content: repoBriefing() });
     await event("status", "Runner started on GitHub Actions in " + (spec.mode || "build") + " mode.", "planning");
     await event("thought", "Working out what this task needs and which files matter.", "planning");
   }
@@ -381,12 +691,14 @@ async function main() {
   let done = null;
   let sawCheck = false;
   let sawWrite = false;
+  let noProgress = 0;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (Date.now() - START > TIME_LIMIT_MS) {
       await checkpointAndContinue(messages);
       return;
     }
+    messages = await compactIfNeeded(spec, messages);
     const body = await callModel(spec, messages);
     const msg = body.choices && body.choices[0] && body.choices[0].message;
     if (!msg) throw new Error("The model returned no message");
@@ -398,57 +710,96 @@ async function main() {
 
     const calls = msg.tool_calls || [];
     if (calls.length === 0) {
+      // The model stopped calling tools. If it never verified its edits, nudge
+      // it once instead of silently finishing on unchecked work.
+      if (sawWrite && !sawCheck && noProgress === 0) {
+        noProgress++;
+        messages.push({ role: "user", content: "You changed files but never ran check_code. Run it now, fix anything it reports, then call finish." });
+        continue;
+      }
       done = { summary: msg.content || "Done.", commit_message: "Coderbot update" };
       break;
     }
 
-    for (const c of calls) {
-      let args = {};
-      try { args = JSON.parse((c.function && c.function.arguments) || "{}"); } catch {}
-      const name = c.function.name;
-      if (name === "finish") {
-        // Refuse to finish with unverified edits: force one verification pass.
-        if (sawWrite && !sawCheck) {
-          sawCheck = true;
-          await event("action", "Checked the code I changed for problems", "checking");
-          const result = runCheckCode();
-          messages.push({ role: "tool", tool_call_id: c.id, content: "Before finishing, verification ran automatically: " + JSON.stringify(result).slice(0, 8000) + (result.clean ? "\nClean — you may call finish again." : "\nFix these problems, then call check_code again.") });
-          if (!result.clean) await event("status", "Found problems — fixing them.", "debugging");
-          continue;
-        }
-        done = { summary: args.summary, commit_message: args.commit_message };
-        messages.push({ role: "tool", tool_call_id: c.id, content: "ok" });
-        break;
-      }
-      if (name === "write_file" || name === "edit_file" || name === "delete_file") sawWrite = true;
-      if (name === "check_code") sawCheck = true;
-      if (name === "delegate") {
-        const agent = subAgents.find((a) => a.id === args.agent_id) || subAgents[0];
+    const parse = (c) => { try { return JSON.parse((c.function && c.function.arguments) || "{}"); } catch { return {}; } };
+
+    // Sub-agents delegated in the same turn run concurrently, so several
+    // models work on their parts at once instead of queueing behind each other.
+    const delegateCalls = calls.filter((c) => c.function && c.function.name === "delegate");
+    const delegateResults = new Map();
+    if (delegateCalls.length) {
+      await Promise.all(delegateCalls.map(async (c) => {
+        const args = parse(c);
+        const agent = subAgents.find((a) => a.id === args.agent_id);
         if (!agent) {
-          messages.push({ role: "tool", tool_call_id: c.id, content: "ERR: no sub-agents are configured" });
-          continue;
+          delegateResults.set(c.id, "ERR: unknown agent_id " + String(args.agent_id || "") + ". Valid ids: " + subAgents.map((a) => a.id).join(", "));
+          return;
+        }
+        const clashes = claimFiles(agent.id, args.files);
+        if (clashes.length) {
+          delegateResults.set(c.id, "ERR: these files are already assigned to another sub-agent: " + clashes.join(", ") + ". Re-split the work so each agent owns different files.");
+          return;
         }
         await event("action", "Delegated to " + agent.label + ": " + String(args.task || "").slice(0, 120), "coding");
-        let report;
-        try { report = await runSubAgent(spec, agent, String(args.task || "")); }
-        catch (e) { report = "Sub-agent failed: " + ((e && e.message) || e); await event("error", report, PHASE, agent); }
-        sawWrite = true;
-        sawCheck = false; // sub-agent work must be verified by the main agent
-        messages.push({ role: "tool", tool_call_id: c.id, content: (agent.label + " reported:\n" + report).slice(0, 20000) });
+        try {
+          const report = await runSubAgent(spec, agent, String(args.task || ""), args.files);
+          delegateResults.set(c.id, (agent.label + " reported:\n" + report).slice(0, 20000));
+        } catch (e) {
+          const report = "Sub-agent failed: " + ((e && e.message) || e);
+          await event("error", report, PHASE, agent);
+          delegateResults.set(c.id, (agent.label + " reported:\n" + report).slice(0, 20000));
+        } finally {
+          releaseFiles(agent.id);
+        }
+      }));
+      sawWrite = true;
+      sawCheck = false; // sub-agent work must be verified by the main agent
+    }
+
+    // finish is handled inline; everything else goes through the shared executor.
+    const finishCall = calls.find((c) => c.function.name === "finish");
+    const others = calls.filter((c) => c.function.name !== "finish" && c.function.name !== "delegate");
+
+    const results = others.length
+      ? await runToolCalls(others, undefined, (name, args) => {
+          if (WRITE_TOOLS.has(name)) sawWrite = true;
+          if (name === "check_code") sawCheck = true;
+          PHASE = phaseFor(name, sawCheck);
+        })
+      : new Map();
+
+    for (const c of calls) {
+      const name = c.function.name;
+      if (name === "finish") continue;
+      if (name === "delegate") {
+        messages.push({ role: "tool", tool_call_id: c.id, content: delegateResults.get(c.id) ?? "ERR: delegation did not run" });
         continue;
       }
-      const nextPhase = phaseFor(name, sawCheck);
-      await event("action", verb(name, args), nextPhase);
-      const out = execTool(name, args);
+      const out = results.get(c.id) ?? "ERR: tool did not run";
       if (name === "check_code") {
         const clean = out.includes('"clean":true');
-        await event(clean ? "status" : "status", clean ? "Checks are clean." : "Found problems — fixing them.", clean ? "checking" : "debugging");
+        await event("status", clean ? "Checks are clean." : "Found problems — fixing them.", clean ? "checking" : "debugging");
       }
-      await log("→ " + name + " " + String(args.path || args.cmd || args.query || "").slice(0, 100));
-      messages.push({ role: "tool", tool_call_id: c.id, content: String(out).slice(0, 40000) });
+      await log("→ " + name);
+      messages.push({ role: "tool", tool_call_id: c.id, content: out });
     }
-    if (done) break;
+
+    if (finishCall) {
+      const args = parse(finishCall);
+      if (sawWrite && !sawCheck) {
+        sawCheck = true;
+        await event("action", "Checked the code I changed for problems", "checking");
+        const result = runCheckCode();
+        messages.push({ role: "tool", tool_call_id: finishCall.id, content: "Before finishing, verification ran automatically: " + JSON.stringify(result).slice(0, 8000) + (result.clean ? "\nClean — you may call finish again." : "\nFix these problems, then call check_code again.") });
+        if (!result.clean) await event("status", "Found problems — fixing them.", "debugging");
+        continue;
+      }
+      done = { summary: args.summary, commit_message: args.commit_message };
+      messages.push({ role: "tool", tool_call_id: finishCall.id, content: "ok" });
+      break;
+    }
   }
+
 
   if (!done) {
     await checkpointAndContinue(messages);
