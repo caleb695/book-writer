@@ -11,6 +11,10 @@ const JOB_ID = process.env.JOB_ID;
 const JOB_SECRET = process.env.JOB_SECRET;
 const APP_URL = process.env.APP_URL;
 const BRANCH = process.env.WORKING_BRANCH;
+/* The branch the user will merge into, and the throwaway branch this task
+ * pushes to. Nothing lands on BASE_BRANCH without the user approving it. */
+let BASE_BRANCH = BRANCH;
+let REVIEW_BRANCH = BRANCH;
 
 if (!JOB_ID || !JOB_SECRET || !APP_URL) { console.error("missing env"); process.exit(1); }
 
@@ -119,10 +123,10 @@ const tools = [
 
 const DELEGATE_TOOL = { type: "function", function: {
   name: "delegate",
-  description: "Hand a self-contained part of the task to one of your sub-agents. It has the same file tools on this same checkout. Issue SEVERAL delegate calls in the SAME turn to run sub-agents in parallel. Never give two sub-agents the same files.",
+  description: "Hand a FULL workstream — not an errand — to one of your sub-agents. Split the overall task into roughly equal shares: one per sub-agent plus one for yourself. Issue every delegate call for a round in the SAME turn so the sub-agents run in parallel. Brief each one like a colleague who just walked in: it has not seen this conversation, so give the goal, the exact files it owns, what to change, and how to verify — never 'based on your findings, fix it'. Each assignment must be a paragraph or more. When they report back, immediately delegate the next comparable chunk if meaningful work remains. Never give two sub-agents the same file, and never invent a sub-agent's result — wait for it. Do NOT delegate a single read, grep or one-line edit; do those yourself.",
   parameters: { type: "object", properties: {
     agent_id: { type: "string" },
-    task: { type: "string", description: "Complete, self-contained instructions: what to change, which files, and how to verify." },
+    task: { type: "string", description: "A complete workstream: the goal, every file it owns, what to implement or change, edge cases, and how to verify. Comparable in size to what you keep for yourself." },
     files: { type: "array", items: { type: "string" }, description: "Files this sub-agent owns. Used to stop two sub-agents editing the same file." },
   }, required: ["agent_id", "task"] },
 } };
@@ -670,6 +674,9 @@ async function main() {
   const spec = await api("/api/public/jobs/claim");
   await log("Model: " + spec.model + " · mode: " + (spec.mode || "build"));
 
+  BASE_BRANCH = spec.working_branch || BRANCH;
+  REVIEW_BRANCH = "coderbot/task-" + String(spec.task_id || JOB_ID).slice(0, 40);
+
   if (spec.job_type === "index") { await runIndex(spec); return; }
 
   const resumed = spec.checkpoint && Array.isArray(spec.checkpoint.messages) && spec.checkpoint.messages.length > 0;
@@ -692,6 +699,7 @@ async function main() {
   let sawCheck = false;
   let sawWrite = false;
   let noProgress = 0;
+  let redelegateNote = null;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (Date.now() - START > TIME_LIMIT_MS) {
@@ -735,14 +743,20 @@ async function main() {
           delegateResults.set(c.id, "ERR: unknown agent_id " + String(args.agent_id || "") + ". Valid ids: " + subAgents.map((a) => a.id).join(", "));
           return;
         }
+        const task = String(args.task || "").trim();
+        // A one-line errand wastes a whole agent: make the split substantial.
+        if (task.length < 120) {
+          delegateResults.set(c.id, "ERR: that assignment is too small for a sub-agent. Give it a full workstream of comparable size to your own share — the goal, every file it owns, the behaviour to implement, and how to verify — in at least a short paragraph. Re-issue the delegate call with the bigger chunk.");
+          return;
+        }
         const clashes = claimFiles(agent.id, args.files);
         if (clashes.length) {
           delegateResults.set(c.id, "ERR: these files are already assigned to another sub-agent: " + clashes.join(", ") + ". Re-split the work so each agent owns different files.");
           return;
         }
-        await event("action", "Delegated to " + agent.label + ": " + String(args.task || "").slice(0, 120), "coding");
+        await event("action", "Delegated to " + agent.label + ": " + task.slice(0, 120), "coding");
         try {
-          const report = await runSubAgent(spec, agent, String(args.task || ""), args.files);
+          const report = await runSubAgent(spec, agent, task, args.files);
           delegateResults.set(c.id, (agent.label + " reported:\n" + report).slice(0, 20000));
         } catch (e) {
           const report = "Sub-agent failed: " + ((e && e.message) || e);
@@ -754,7 +768,13 @@ async function main() {
       }));
       sawWrite = true;
       sawCheck = false; // sub-agent work must be verified by the main agent
+      const idle = subAgents.map((a) => a.id + " (" + a.label + ")").join(", ");
+      const pending = TODOS.filter((t) => t.status !== "done").map((t) => t.title).join("; ");
+      redelegateNote = "All sub-agents are idle again: " + idle + ". "
+        + (pending ? "Still open on your plan: " + pending + ". " : "")
+        + "If any meaningful work remains, hand each idle sub-agent another comparable-sized chunk in your NEXT turn (several delegate calls at once) and take an equal share yourself. Only stop delegating when what is left is small enough that splitting it would cost more than doing it.";
     }
+
 
     // finish is handled inline; everything else goes through the shared executor.
     const finishCall = calls.find((c) => c.function.name === "finish");
@@ -784,6 +804,13 @@ async function main() {
       messages.push({ role: "tool", tool_call_id: c.id, content: out });
     }
 
+    if (redelegateNote) {
+      messages.push({ role: "user", content: redelegateNote });
+      redelegateNote = null;
+    }
+
+
+
     if (finishCall) {
       const args = parse(finishCall);
       if (sawWrite && !sawCheck) {
@@ -809,30 +836,59 @@ async function main() {
   await commitAndComplete(done);
 }
 
-async function gitCommit(message) {
+async function gitCommit(message, branch) {
   sh("git config user.email 'coderbot@users.noreply.github.com'");
   sh("git config user.name 'Coderbot'");
   const status = sh("git status --porcelain");
   if (!status.trim()) return null;
   sh("git add -A");
   sh("git commit -m " + JSON.stringify(message));
-  sh("git pull --rebase origin " + BRANCH + " || true");
-  sh("git push origin HEAD:" + BRANCH);
+  sh("git push --force origin HEAD:" + branch);
   return sh("git rev-parse HEAD").trim();
 }
 
+/* What the run changed, relative to the branch the user will merge into. */
+function reviewDetails() {
+  let files = [];
+  let patch = "";
+  try {
+    sh("git fetch origin " + BASE_BRANCH + " --depth=200 || true");
+    const range = "origin/" + BASE_BRANCH + "...HEAD";
+    files = sh("git diff --name-status " + range).split("\n").map((l) => l.trim()).filter(Boolean)
+      .map((l) => {
+        const [status, ...rest] = l.split(/\s+/);
+        return { status: status[0] === "A" ? "added" : status[0] === "D" ? "deleted" : status[0] === "R" ? "renamed" : "modified", path: rest.join(" ") };
+      }).slice(0, 500);
+    patch = sh("git --no-pager diff " + range).slice(0, 400000);
+  } catch (e) {
+    log("diff summary failed: " + ((e && e.message) || e));
+  }
+  return { files, patch };
+}
+
+/* The agent never lands work by itself: it pushes to a review branch and the
+ * user approves the merge from the app. */
 async function commitAndComplete(done) {
   try {
-    const sha = await gitCommit(done.commit_message || "Coderbot update");
+    const sha = await gitCommit(done.commit_message || "Coderbot update", REVIEW_BRANCH);
     if (sha) {
-      await event("status", "Committed and pushed " + sha.slice(0, 7) + ".", "done");
-      await api("/api/public/jobs/complete", { status: "completed", summary: done.summary || "Done.", commit_sha: sha });
+      const { files, patch } = reviewDetails();
+      await event("status", "Pushed " + files.length + " changed file(s) to " + REVIEW_BRANCH + " — waiting for your approval.", "done");
+      await api("/api/public/jobs/complete", {
+        status: "awaiting_review",
+        summary: done.summary || "Done.",
+        commit_sha: sha,
+        review_branch: REVIEW_BRANCH,
+        base_branch: BASE_BRANCH,
+        changed_files: files,
+        diff: patch,
+      });
     } else {
       await event("status", "Finished — no file changes were needed.", "done");
       await api("/api/public/jobs/complete", { status: "completed", summary: done.summary || "No changes." });
     }
   } catch (e) {
-    await event("error", "Commit/push failed: " + ((e && e.message) || e), "done");
+    await event("error", "Push failed: " + ((e && e.message) || e), "done");
     await api("/api/public/jobs/complete", { status: "failed", error: String((e && e.message) || e) });
     process.exit(1);
   }
@@ -842,13 +898,14 @@ async function commitAndComplete(done) {
  * run so long tasks survive the 6h GitHub Actions limit. */
 async function checkpointAndContinue(messages) {
   await event("status", "Approaching the GitHub Actions time limit — saving progress and starting a fresh run.", PHASE);
-  try { await gitCommit("Coderbot checkpoint (work in progress)"); } catch (e) { await log("checkpoint push failed: " + ((e && e.message) || e)); }
+  try { await gitCommit("Coderbot checkpoint (work in progress)", REVIEW_BRANCH); } catch (e) { await log("checkpoint push failed: " + ((e && e.message) || e)); }
   const checkpoint = { messages: trimForCheckpoint(messages), todos: TODOS };
   await api("/api/public/jobs/checkpoint", { checkpoint });
-  const res = await api("/api/public/jobs/continue", { checkpoint });
+  const res = await api("/api/public/jobs/continue", { checkpoint, review_branch: REVIEW_BRANCH });
   await event("status", "Continuing in a new GitHub Actions run.", PHASE);
   await log("continuation job " + (res.job_id || "?"));
 }
+
 
 /* ============================ Indexing mode ============================ */
 
