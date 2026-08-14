@@ -1,5 +1,5 @@
 name: Coderbot
-# Installed by Coderbot — runner version 8
+# Installed by Coderbot — runner version 10
 on:
   repository_dispatch:
     types: [lovable-coding-job]
