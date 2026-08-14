@@ -6,6 +6,12 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import dns from "node:dns";
+/* GitHub Actions runners frequently resolve AAAA (IPv6) records but have no
+ * IPv6 route, so undici's fetch tries IPv6 first and fails hard with
+ * "TypeError: fetch failed" (no IPv4 fallback on some Node versions). Prefer
+ * IPv4 so outbound provider/embedding calls are not dropped at connection time. */
+dns.setDefaultResultOrder("ipv4first");
 
 const JOB_ID = process.env.JOB_ID;
 const JOB_SECRET = process.env.JOB_SECRET;
@@ -97,6 +103,14 @@ const tools = [
     parameters: { type: "object", properties: { paths: { type: "array", items: { type: "string" } } }, required: ["paths"] } } },
   { type: "function", function: { name: "search_code", description: "Search the repo for a regular expression. Returns path:line matches. Optional `path_filter` substring and `context` lines.",
     parameters: { type: "object", properties: { query: { type: "string" }, max_results: { type: "number" }, path_filter: { type: "string" }, context: { type: "number" } }, required: ["query"] } } },
+  { type: "function", function: { name: "list_reference_repos", description: "List other connected GitHub repos available read-only as code references. Use these to borrow patterns or copy snippets into the repo you are editing.",
+    parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "list_reference_files", description: "List files in a connected reference repo by owner/name. Read-only; cannot edit that repo.",
+    parameters: { type: "object", properties: { repo: { type: "string", description: "owner/name" }, prefix: { type: "string" } }, required: ["repo"] } } },
+  { type: "function", function: { name: "read_reference_file", description: "Read a file from a connected reference repo by owner/name so you can copy any useful part into the repo you are editing.",
+    parameters: { type: "object", properties: { repo: { type: "string", description: "owner/name" }, path: { type: "string" } }, required: ["repo", "path"] } } },
+  { type: "function", function: { name: "search_reference_code", description: "Search a connected reference repo for code to reuse. Returns matching files with line numbers. Read-only.",
+    parameters: { type: "object", properties: { repo: { type: "string", description: "owner/name" }, query: { type: "string" }, regex: { type: "boolean" }, max_results: { type: "number" } }, required: ["repo", "query"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a file with the COMPLETE new contents.",
     parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Replace an exact substring in a file. Prefer this for small edits.",
@@ -113,6 +127,8 @@ const tools = [
     parameters: { type: "object", properties: { path: { type: "string" } } } } },
   { type: "function", function: { name: "fetch_url", description: "Fetch a URL and return its text (HTML stripped, truncated). Use for docs and API references.",
     parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } } },
+  { type: "function", function: { name: "search_web", description: "Search the web for a query and return titles, URLs and snippets of the top results. Use this to look up current docs, package versions, error fixes and best practices instead of guessing. Read-only.",
+    parameters: { type: "object", properties: { query: { type: "string", description: "The search query" }, max_results: { type: "number", description: "Max results to return (default 6, max 12)" } }, required: ["query"] } } },
   { type: "function", function: { name: "check_code", description: "Verify your work: runs the project's typecheck/lint/test/build scripts when they exist, plus static checks on changed files. Call this after editing and fix anything it reports.",
     parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "update_plan", description: "Record or update your task list so the user can follow along. Each item has a title and a status of pending, in_progress or done.",
@@ -132,7 +148,7 @@ const DELEGATE_TOOL = { type: "function", function: {
 } };
 
 /* Read-only tools can safely run at the same time within one assistant turn. */
-const READ_ONLY_TOOLS = new Set(["list_files", "glob", "read_file", "read_files", "search_code", "git_diff", "fetch_url"]);
+const READ_ONLY_TOOLS = new Set(["list_files", "glob", "read_file", "read_files", "search_code", "git_diff", "fetch_url", "search_web", "list_reference_repos", "list_reference_files", "read_reference_file", "search_reference_code"]);
 
 /* Tools available to the model this step. `finish` and `delegate` are main-agent only. */
 function toolsFor(kind, subAgents) {
@@ -190,6 +206,57 @@ function pkgScripts() {
   try { return JSON.parse(raw).scripts ?? {}; } catch { return {}; }
 }
 
+// Replace string/template/regex literals and comments with spaces so bracket &
+// paren balance checks reflect real code. Prevents false positives such as a
+// `(` in the regex /require\(/ or `)` inside a template string.
+function stripCodeLiterals(src) {
+  const blanks = (len) => " ".repeat(len);
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === "/" && src[i + 1] === "/") { // line comment
+      while (i < n && src[i] !== "\n") { out += " "; i++; }
+      continue;
+    }
+    if (c === "/" && src[i + 1] === "*") { // block comment
+      out += "  "; i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += " "; i++; }
+      if (i < n) { out += "  "; i += 2; }
+      continue;
+    }
+    if (c === "\"" || c === "'" || c === "`") { // string/template
+      const q = c;
+      out += " "; i++;
+      while (i < n) {
+        if (src[i] === "\\") { out += "  "; i += 2; continue; }
+        if (src[i] === q) { out += " "; i++; break; }
+        out += " "; i++;
+      }
+      continue;
+    }
+    if (c === "/") { // regex heuristic
+      let j = i + 1, depth = 0, isRegex = false;
+      for (; j < n; j++) {
+        if (src[j] === "\\") { j++; continue; }
+        if (src[j] === "[") depth++;
+        if (src[j] === "]") depth--;
+        if (src[j] === "/" && depth <= 0) { isRegex = true; break; }
+        if (src[j] === "\n") break;
+      }
+      if (isRegex && /[\s(=,:;]/.test(src[i - 1] || " ")) {
+        out += blanks(j - i + 1);
+        i = j + 1;
+        while (i < n && /[a-z]/i.test(src[i])) { out += " "; i++; }
+        continue;
+      }
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 function runCheckCode() {
   const problems = [];
   const files = changedFiles().filter((f) => TEXT_EXT.test(f));
@@ -199,9 +266,12 @@ function runCheckCode() {
     if (content == null) continue;
     if (!content.trim()) { problems.push(f + ": file is empty"); continue; }
     if (/^<{7}|^>{7}|^={7}$/m.test(content)) problems.push(f + ": leftover merge conflict markers");
+    // Strip strings/was-comments/regex so bracket counts reflect real code, not
+    // parens that legitimately appear inside literals like /require\((.
+    const code = stripCodeLiterals(content);
     for (const pair of [["{", "}", "braces"], ["(", ")", "parens"], ["[", "]", "brackets"]]) {
-      const o = content.split(pair[0]).length - 1;
-      const c = content.split(pair[1]).length - 1;
+      const o = code.split(pair[0]).length - 1;
+      const c = code.split(pair[1]).length - 1;
       if (o !== c) problems.push(f + ": unbalanced " + pair[2] + " (" + o + " vs " + c + ")");
     }
     const importRe = /(?:from|require\()\s*['"](\.[^'"]+)['"]/g;
@@ -251,6 +321,101 @@ function globToRe(pattern) {
 
 function numbered(content, offset = 1) {
   return content.split("\n").map((l, i) => (i + offset) + "\t" + l).join("\n");
+}
+
+const stripHtml = (s) => s
+  .replace(/<[^>]+>/g, " ")
+  .replace(/&quot;/g, '"')
+  .replace(/&#x27;|&#39;/g, "'")
+  .replace(/&amp;/g, "&")
+  .replace(/&lt;/g, "<")
+  .replace(/&gt;/g, ">")
+  .replace(/&#x2F;|&#47;/g, "/")
+  .replace(/&#x3D;/g, "=")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const normUrl = (u) => {
+  let url = String(u || "");
+  if (/^\/\/duckduckgo\.com\/l\/\?uddg=/.test(url)) {
+    url = decodeURIComponent(url.replace(/^\/\/duckduckgo\.com\/l\/\?uddg=/, "").split("&rut=")[0]);
+  }
+  return url;
+};
+
+/* Web search via DuckDuckGo's HTML endpoint — no API key needed, so every
+ * model/provider can use it. Falls back to Bing's HTML results if DuckDuckGo
+ * blocks/rate-limits or returns nothing. */
+async function searchWeb(query, maxResults) {
+  const q = String(query || "").trim();
+  if (!q) return "ERR: search_web requires a ?query=";
+  const limit = Math.min(Math.max(Math.floor(maxResults || 6), 1), 12);
+
+  const parseDuck = (html) => {
+    const out = [];
+    const linkRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const snipRe = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+    const links = []; let m;
+    while ((m = linkRe.exec(html))) links.push({ url: normUrl(m[1]), title: stripHtml(m[2]) });
+    const snips = [];
+    while ((m = snipRe.exec(html))) snips.push(stripHtml(m[1]));
+    for (let i = 0; i < links.length && out.length < limit; i++) {
+      if (!links[i].title) continue;
+      out.push((i + 1) + ". " + links[i].title + "\n   " + (links[i].url || "") + (snips[i] ? "\n   " + snips[i] : ""));
+    }
+    return out;
+  };
+
+  const parseBing = (html) => {
+    const out = [];
+    const cardRe = /<li class="b_algo"[\s\S]*?(?:<\/li>|<li class=")/g;
+    const cards = [];
+    let mm;
+    while ((mm = cardRe.exec(html))) cards.push(mm[0]);
+    if (!cards.length) {
+      // looser fallback: any link with site title inside a "b_algo" container
+      const blockRe = /<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/g;
+      while ((mm = blockRe.exec(html))) out.push((out.length + 1) + ". " + stripHtml(mm[2]) + "\n   " + mm[1] + (mm[3] ? "\n   " + stripHtml(mm[3]) : ""));
+      return out.slice(0, limit);
+    }
+    for (const c of cards) {
+      const a = /<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(c);
+      const p = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(c);
+      if (!a || !stripHtml(a[2])) continue;
+      out.push((out.length + 1) + ". " + stripHtml(a[2]) + "\n   " + a[1] + (p ? "\n   " + stripHtml(p[1]) : ""));
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+
+  let html = "";
+  for (const provider of ["duck", "bing"]) {
+    try {
+      const url = provider === "duck"
+        ? "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q)
+        : "https://www.bing.com/search?q=" + encodeURIComponent(q) + "&format=rss";
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; CoderbotRunner/1.0)" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) continue;
+      html = (await res.text()).replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
+      const results = provider === "duck" ? parseDuck(html) : parseBing(html);
+      if (results.length) return results.join("\n\n");
+    } catch {}
+  }
+  if (/<item>/i.test(html)) {
+    // Bing RSS fallback for title/link/description
+    const items = [];
+    let mm;
+    const itemRe = /<item>[\s\S]*?<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>[\s\S]*?<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>[\s\S]*?(?:<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>)?[\s\S]*?<\/item>/g;
+    while ((mm = itemRe.exec(html))) {
+      items.push((items.length + 1) + ". " + stripHtml(mm[1]) + "\n   " + mm[2] + (mm[3] ? "\n   " + stripHtml(mm[3]) : ""));
+      if (items.length >= limit) break;
+    }
+    if (items.length) return items.join("\n\n");
+  }
+  return "No results for \"" + q + "\".";
 }
 
 async function execTool(name, args) {
@@ -308,6 +473,10 @@ async function execTool(name, args) {
       }
       return hits.join("\n").slice(0, 40000) || "(no matches)";
     }
+    if (name === "list_reference_repos") return JSON.stringify(await api("/api/public/jobs/reference", { action: "list_repos" })).slice(0, 40000);
+    if (name === "list_reference_files") return JSON.stringify(await api("/api/public/jobs/reference", { action: "list_files", repo: args.repo, prefix: args.prefix })).slice(0, 50000);
+    if (name === "read_reference_file") return JSON.stringify(await api("/api/public/jobs/reference", { action: "read_file", repo: args.repo, path: args.path })).slice(0, 70000);
+    if (name === "search_reference_code") return JSON.stringify(await api("/api/public/jobs/reference", { action: "search_code", repo: args.repo, query: args.query, regex: args.regex, max_results: args.max_results })).slice(0, 50000);
     if (name === "write_file") { writeFileSafe(args.path, args.content ?? ""); return "OK wrote " + args.path; }
     if (name === "edit_file") {
       const c = readFileSafe(args.path);
@@ -357,6 +526,9 @@ async function execTool(name, args) {
         .replace(/\s{2,}/g, " ");
       return ("HTTP " + res.status + "\n" + clean).slice(0, 20000);
     }
+    if (name === "search_web") {
+      return await searchWeb(String(args.query || ""), args.max_results);
+    }
     if (name === "check_code") { return JSON.stringify(runCheckCode()).slice(0, 12000); }
     if (name === "update_plan") { TODOS = Array.isArray(args.todos) ? args.todos : []; return "OK"; }
     return "ERR: unknown tool";
@@ -376,6 +548,9 @@ function chatRoute(spec, model) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* Upper bound for one (non-streamed) completion request. */
+const MODEL_TIMEOUT_MS = 1000 * 60 * 10;
+
 /* Per-minute rate limits: wait 10s and retry (up to ~50 minutes of waiting).
  * Transient network/5xx failures back off and retry a few times.
  * Any other limit (quota / credits / context) stops the run with the
@@ -387,18 +562,45 @@ async function callModel(spec, messages, opts = {}) {
   let transient = 0;
   for (;;) {
     let res;
+    // The completion is not streamed, so nothing arrives until the model has
+    // finished generating: with tools and a long context that regularly takes
+    // minutes. The abort is only here to stop a dead connection hanging the
+    // job, so it has to be far longer than a normal response.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
     try {
       res = await fetch(route.base + "/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + route.key },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + route.key,
+          // Some CI egress filters/proxies drop outbound requests without one.
+          "User-Agent": "coderbot-agent/2 (GitHub Actions)",
+        },
+        signal: controller.signal,
         body: JSON.stringify(activeTools && activeTools.length
           ? { model: route.model, messages, tools: activeTools, tool_choice: "auto" }
           : { model: route.model, messages }),
       });
     } catch (e) {
-      if (++transient > 6) throw new Error("Network error talking to the model provider: " + ((e && e.message) || e));
+      const timedOut = e && (e.name === "AbortError" || e.name === "TimeoutError");
+      if (++transient > 6) {
+        if (timedOut) {
+          throw new Error("The model provider did not respond within " + Math.round(MODEL_TIMEOUT_MS / 60000) + " minutes, over " + transient + " attempts. Try a faster model.");
+        }
+        // Surface the real underlying cause (e.cause) rather than a bare
+        // "fetch failed", so a stuck config is diagnosable from the log.
+        const cause = (e && e.cause && e.cause.message) ? e.cause.message : "";
+        const name = (e && e.name) || "Error";
+        throw new Error("Network error talking to the model provider: " + name + ": " + ((e && e.message) || e) + (cause ? " (" + String(cause) + ")" : ""));
+      }
+      await event("status", timedOut
+        ? "The model provider did not respond in time — retrying."
+        : "Network hiccup talking to the model provider — retrying.");
       await sleep(Math.min(30000, 2000 * transient));
       continue;
+    } finally {
+      clearTimeout(timeout);
     }
     if (res.ok) {
       const body = await res.json().catch(() => null);
@@ -508,6 +710,10 @@ function verb(name, args) {
   if (name === "list_files") return "Listed the repository files";
   if (name === "glob") return "Looked for files matching " + args.pattern;
   if (name === "search_code") return 'Searched for "' + String(args.query || "").slice(0, 60) + '"';
+  if (name === "list_reference_repos") return "Listed connected reference repos";
+  if (name === "list_reference_files") return "Listed reference files in " + String(args.repo || "");
+  if (name === "read_reference_file") return "Read " + String(args.repo || "") + ":" + String(args.path || "");
+  if (name === "search_reference_code") return 'Searched "' + String(args.query || "").slice(0, 60) + '" in ' + String(args.repo || "");
   if (name === "write_file") return "Wrote " + args.path;
   if (name === "edit_file") return "Edited " + args.path;
   if (name === "multi_edit") return "Edited " + [...new Set((args.edits || []).map((e) => e.path))].join(", ").slice(0, 140);
@@ -516,6 +722,7 @@ function verb(name, args) {
   if (name === "run_shell") return "Ran " + String(args.cmd || "").slice(0, 90);
   if (name === "git_diff") return "Reviewed my diff so far";
   if (name === "fetch_url") return "Fetched " + String(args.url || "").slice(0, 80);
+  if (name === "search_web") return 'Searched the web for "' + String(args.query || "").slice(0, 60) + '"';
   if (name === "check_code") return "Checked the code I changed for problems";
   if (name === "update_plan") return "Updated the plan: " + (args.todos || []).map((t) => t.title).join(" · ").slice(0, 200);
   if (name === "delegate") return "Delegated to " + (args.agent_id || "a sub-agent");
@@ -549,24 +756,39 @@ function phaseFor(name, sawCheck) {
 /* ----------------------------------- main --------------------------------- */
 
 /* Pull the user's uploaded files into the checkout so code can use them. */
+const safeUploadPath = (name) => String(name)
+  .split("/")
+  .filter(Boolean)
+  .map((part) => part.replace(/[^\w.\-]+/g, "_").replace(/^\.+$/, "_").slice(0, 120) || "file")
+  .join("/");
+
 async function fetchAttachments(spec) {
   const list = spec.attachments || [];
   if (!list.length) return [];
   const readable = [];
   fs.mkdirSync("uploads", { recursive: true });
-  for (const a of list) {
-    const safe = String(a.name).replace(/[^\w.\-]+/g, "_");
-    try {
-      const res = await fetch(a.url);
-      if (!res.ok) throw new Error("download " + res.status);
-      const buf = Buffer.from(await res.arrayBuffer());
-      fs.writeFileSync(path.join("uploads", safe), buf);
-      await event("action", "Saved upload uploads/" + safe, PHASE);
-      if (!a.code_only) readable.push({ name: safe, mime: a.mime_type || "", buf });
-    } catch (e) {
-      await log("attachment failed " + safe + ": " + ((e && e.message) || e));
+  let next = 0;
+  const workers = Array.from({ length: Math.min(6, list.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= list.length) return;
+      const a = list[index];
+      const safe = safeUploadPath(a.name);
+      try {
+        const res = await fetch(a.url);
+        if (!res.ok) throw new Error("download " + res.status);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const target = path.join("uploads", safe);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, buf);
+        await event("action", "Saved upload uploads/" + safe, PHASE);
+        if (!a.code_only) readable.push({ name: safe, mime: a.mime_type || "", buf });
+      } catch (e) {
+        await log("attachment failed " + safe + ": " + ((e && e.message) || e));
+      }
     }
-  }
+  });
+  await Promise.all(workers);
   return readable;
 }
 
@@ -604,6 +826,7 @@ async function runSubAgent(spec, agent, task, ownFiles) {
       "Other sub-agents may be working on other files in this same checkout at the same time, so never reformat or rewrite files outside your scope. " +
       (agent.instructions ? "Your standing scope: " + agent.instructions + ". " : "") +
       "Work efficiently: batch reads with read_files, use search_code/glob to locate things, prefer edit_file or multi_edit over rewriting whole files. " +
+      "Use search_web to look up current docs, APIs or fixes when you are not sure about a library, version or error. " +
       "Verify with check_code (or a targeted run_shell command) and fix what it reports. " +
       "When your part is done, reply with a plain-text report of exactly which files you changed and how (no tool call)." },
     { role: "user", content: task },
@@ -700,12 +923,25 @@ async function main() {
   let sawWrite = false;
   let noProgress = 0;
   let redelegateNote = null;
+  // Guard against a degenerate loop where the model keeps invoking the exact
+  // same tool call (e.g. re-reading one file or re-running one command) without
+  // making progress. Interrupt with a nudge so the run doesn't burn steps.
+  let lastToolSig = null;
+  let toolRepeatStreak = 0;
+
+  // Errors in the loop (a request/fetch/tool failure etc.) are analysed by the
+  // model instead of bringing the whole run down. We track consecutive repeats
+  // of the same error so a genuinely stuck loop always saves progress and tells
+  // the user rather than spinning forever.
+  let lastErrorSig = null;
+  let errorStreak = 0;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (Date.now() - START > TIME_LIMIT_MS) {
       await checkpointAndContinue(messages);
       return;
     }
+    try {
     messages = await compactIfNeeded(spec, messages);
     const body = await callModel(spec, messages);
     const msg = body.choices && body.choices[0] && body.choices[0].message;
@@ -788,6 +1024,25 @@ async function main() {
         })
       : new Map();
 
+    // Detect a degenerate loop: the same (non-read-only) tool + args fired three
+    // times in a row without any write in between. Nudge the model once instead
+    // of letting it spin. Purely read-only turns are fine (models loop reads to
+    // explore), so only react when nothing changed.
+    if (!sawWrite && others.length) {
+      const sigs = others.map((c) => JSON.stringify(c.function));
+      const sig = sigs.join("|");
+      if (sig === lastToolSig) toolRepeatStreak += 1;
+      else { lastToolSig = sig; toolRepeatStreak = 1; }
+      if (toolRepeatStreak >= 3) {
+        toolRepeatStreak = 0;
+        lastToolSig = null;
+        messages.push({ role: "user", content: "You have had three turns with the same tool calls but made no edits. Reconsider your approach — read, then actually change files or call finish. Do not repeat the same calls again." });
+      }
+    } else {
+      lastToolSig = null;
+      toolRepeatStreak = 0;
+    }
+
     for (const c of calls) {
       const name = c.function.name;
       if (name === "finish") continue;
@@ -824,6 +1079,51 @@ async function main() {
       done = { summary: args.summary, commit_message: args.commit_message };
       messages.push({ role: "tool", tool_call_id: finishCall.id, content: "ok" });
       break;
+    }
+    } catch (e) {
+      // A request or fetch (from the provider or another tool) threw. Don't
+      // silently kill the run: if it is a recoverable, unrelated failure, feed
+      // the message back to the model so it can decide whether to retry, and
+      // keep the loop going. If the same error keeps coming back, save progress
+      // and message the user, then stop cleanly.
+      const errText = String((e && e.message) || e) || String(e);
+      const sig = errText.slice(0, 200);
+      if (sig === lastErrorSig) errorStreak += 1;
+      else { lastErrorSig = sig; errorStreak = 1; }
+
+      // Per-minute / rate-limit errors are already retried every 10s (inside
+      // callModel for ~50 minutes and api() with backoff). If one escapes here
+      // the retries were exhausted, so it is a real, persistent problem — treat
+      // it as one.
+      const exhaustedRateLimit = /rate.?limit|per.?minute|429|too many requests|quota|credit|billing/i.test(errText);
+
+      if (errorStreak >= 3 || exhaustedRateLimit) {
+        const why = exhaustedRateLimit
+          ? "Rate / per-minute limits were exhausted after retrying."
+          : "The run kept hitting the same error three times in a row and could not retry past it.";
+        await saveProgressAndNotify(messages, why + " Error: " + errText.slice(0, 1200));
+        return;
+      }
+
+      await event("error", "The loop hit an error; analysing it before continuing: " + errText.slice(0, 600), PHASE);
+      let decision = null;
+      try {
+        decision = await analyzeLoopError(spec, messages, errText);
+      } catch (analysisErr) {
+        // Could not ask the model for a decision (provider may be flaky). Back
+        // off briefly and let the loop try again; the streak guard above stops
+        // any infinite spin on a genuinely stuck error.
+        await log("error analysis failed: " + String((analysisErr && analysisErr.message) || analysisErr));
+        await sleep(10000);
+        continue;
+      }
+
+      if (!decision || decision.action === "abort") {
+        await saveProgressAndNotify(messages, (decision && decision.reason) || ("The model decided the error is unrecoverable. Error: " + errText.slice(0, 1200)));
+        return;
+      }
+      await event("status", "Recovered after the error and continuing the task.", PHASE);
+      messages.push({ role: "user", content: decision.note });
     }
   }
 
@@ -907,6 +1207,55 @@ async function checkpointAndContinue(messages) {
 }
 
 
+/* Ask the model whether a non-serial failure in the loop is worth retrying, or
+ * whether the run should stop, save its progress and tell the user. Rate-limit
+ * / per-minute errors never normally reach here because they are retried every
+ * 10 seconds inside callModel and api(); this handles every other error. */
+async function analyzeLoopError(spec, messages, error) {
+  const body = await callModel(spec, [
+    { role: "system", content:
+      "You are the error handler inside an autonomous coding agent running in GitHub Actions. " +
+      "The agent's main loop just hit an error from a request/fetch/tool. Rate-limit and per-minute errors are retried automatically elsewhere and almost never reach you, so this is a different kind of failure.\n" +
+      "Analyse the error message and decide what the loop should do next:\n" +
+      "- retry: the error looks transient, recoverable, or the loop can simply move on (e.g. one flaky tool call while the overall goal is still intact), so continue working.\n" +
+      "- abort: retrying cannot help — the error is fatal, the context is corrupt, or this is a repeat of something that was already retried a few times.\n" +
+      'For retry return ONLY JSON: {"action":"retry","note":"<1-2 short sentences the agent reads about what happened and how to proceed, e.g. what to avoid or try differently>"}\n' +
+      'For abort return ONLY JSON: {"action":"abort","reason":"<a concise reason to show the user>"}\n' +
+      "Return ONLY the JSON object; no prose." },
+    { role: "user", content: "The coding loop hit this error:\n\n" + String(error).slice(0, 4000) + "\n\nDecide: retry or abort." },
+  ], { model: opts_model(spec, undefined), tools: [], agent: undefined });
+  const content = (body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content) || "";
+  const m = content.match(/\{[\s\S]*\}/);
+  if (!m) {
+    return { action: "retry", note: "Encountered an error in the loop: " + String(error).slice(0, 500) + ". The error handler could not decide, so retry the operation once; if it fails again, save progress and stop." };
+  }
+  try {
+    const parsed = JSON.parse(m[0]);
+    if (parsed.action === "abort") return { action: "abort", reason: String(parsed.reason || "persistent error").slice(0, 2000) };
+    return { action: "retry", note: String(parsed.note || "Retrying after the error.").slice(0, 1500) };
+  } catch {
+    return { action: "retry", note: "Encountered an error in the loop: " + String(error).slice(0, 500) + ". The error handler returned a malformed decision, so retry once; if it fails again, save progress and stop." };
+  }
+}
+
+/* An error the loop cannot retry past: commit whatever work exists so nothing
+ * is lost, store a checkpoint, message the user with the error, then exit.
+ * This mirrors checkpointAndContinue but does NOT dispatch a follow-up run. */
+async function saveProgressAndNotify(messages, reason) {
+  const text = String(reason || "an unexpected error stopped the run.");
+  await event("error", text, PHASE);
+  await event("status", "Saving progress and notifying you about the error.", PHASE);
+  try { await gitCommit("Coderbot progress checkpoint", REVIEW_BRANCH); }
+  catch (e) { await log("progress push failed: " + ((e && e.message) || e)); }
+  const checkpoint = { messages: trimForCheckpoint(messages), todos: TODOS };
+  try { await api("/api/public/jobs/checkpoint", { checkpoint }); } catch {}
+  const userMsg = ("❌ The GitHub Actions run stopped due to an error that kept recurring:\n\n" + text).slice(0, 3000);
+  try { await api("/api/public/jobs/complete", { status: "failed", summary: userMsg, error: text }); } catch {}
+  await log("ABORT " + text);
+  process.exit(1);
+}
+
+
 /* ============================ Indexing mode ============================ */
 
 function sha1(s) { return crypto.createHash("sha1").update(s).digest("hex"); }
@@ -973,27 +1322,38 @@ async function runIndex(spec) {
   await log("Indexing " + files.length + " files with " + spec.embedding_model + "…");
   await api("/api/public/jobs/index-progress", { current: 0, total: files.length });
   let done = 0;
-  for (const f of files) {
-    try {
-      const content = fs.readFileSync(f.path, "utf8");
-      const sha = sha1(content);
-      const chunks = chunkText(content);
-      const embeddings = [];
-      for (let i = 0; i < chunks.length; i += 32) embeddings.push(...(await embedBatch(spec, chunks.slice(i, i + 32))));
-      const summary = await summarize(spec, f.path, content);
-      await api("/api/public/jobs/index-batch", {
-        file: { path: f.path, sha, size: f.size, language: (f.path.split(".").pop() || "").toLowerCase() || null, summary, symbols: extractSymbols(content) },
-        chunks: chunks.map((c, i) => ({ chunk_index: i, content: c, embedding: embeddings[i], token_count: Math.round(c.length / 4) })),
-      });
-    } catch (e) {
-      await log("skip " + f.path + ": " + String((e && e.message) || e).slice(0, 200));
-    }
-    done++;
-    if (done % 5 === 0 || done === files.length) {
-      await api("/api/public/jobs/index-progress", { current: done, total: files.length });
-      await log("indexed " + done + "/" + files.length);
+  // Files are independent, so process them with a small worker pool instead of
+  // one-at-a-time. The embeddings API is the bottleneck; a pool of 3 keeps it
+  // saturated without hammering the provider's rate limit into a retry spiral.
+  const CONCURRENCY = 3;
+  let cursor = 0;
+  async function worker() {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= files.length) return;
+      const f = files[idx];
+      try {
+        const content = fs.readFileSync(f.path, "utf8");
+        const sha = sha1(content);
+        const chunks = chunkText(content);
+        const embeddings = [];
+        for (let i = 0; i < chunks.length; i += 32) embeddings.push(...(await embedBatch(spec, chunks.slice(i, i + 32))));
+        const summary = await summarize(spec, f.path, content);
+        await api("/api/public/jobs/index-batch", {
+          file: { path: f.path, sha, size: f.size, language: (f.path.split(".").pop() || "").toLowerCase() || null, summary, symbols: extractSymbols(content) },
+          chunks: chunks.map((c, i) => ({ chunk_index: i, content: c, embedding: embeddings[i], token_count: Math.round(c.length / 4) })),
+        });
+      } catch (e) {
+        await log("skip " + f.path + ": " + String((e && e.message) || e).slice(0, 200));
+      }
+      done++;
+      if (done % 5 === 0 || done === files.length) {
+        await api("/api/public/jobs/index-progress", { current: done, total: files.length });
+        await log("indexed " + done + "/" + files.length);
+      }
     }
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   await api("/api/public/jobs/complete", { status: "completed", summary: "Indexed " + done + " files." });
 }
 
