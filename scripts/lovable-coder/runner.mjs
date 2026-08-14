@@ -380,6 +380,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Transient network/5xx failures back off and retry a few times.
  * Any other limit (quota / credits / context) stops the run with the
  * provider's message. */
+const MODEL_REQUEST_TIMEOUT_MS = 1000 * 60 * 5; // 5 min - long enough for real completions, short enough to catch a stalled connection
 async function callModel(spec, messages, opts = {}) {
   const route = chatRoute(spec, opts.model || spec.model);
   const activeTools = opts.tools || toolsFor("main", spec.sub_agents);
@@ -387,6 +388,13 @@ async function callModel(spec, messages, opts = {}) {
   let transient = 0;
   for (;;) {
     let res;
+    // The model provider fetch has no native timeout: a connection that opens
+    // but then stalls (common from GitHub Actions egress to OpenRouter/Groq/
+    // etc.) hangs indefinitely and surfaces to the user as a "network request
+    // error" once the run dies at the wall clock. Abort it ourselves so a
+    // stall fails fast and goes through the retry path below.
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT_MS);
     try {
       res = await fetch(route.base + "/chat/completions", {
         method: "POST",
@@ -394,11 +402,14 @@ async function callModel(spec, messages, opts = {}) {
         body: JSON.stringify(activeTools && activeTools.length
           ? { model: route.model, messages, tools: activeTools, tool_choice: "auto" }
           : { model: route.model, messages }),
+        signal: controller.signal,
       });
     } catch (e) {
       if (++transient > 6) throw new Error("Network error talking to the model provider: " + ((e && e.message) || e));
       await sleep(Math.min(30000, 2000 * transient));
       continue;
+    } finally {
+      clearTimeout(timeoutHandle);
     }
     if (res.ok) {
       const body = await res.json().catch(() => null);
@@ -639,8 +650,11 @@ async function runToolCalls(calls, agent, onTool) {
 
   await Promise.all(reads.map(async (c) => {
     const args = parse(c);
-    await event("action", verb(c.function.name, args), undefined, agent);
+    // Advance the phase before emitting the action event, otherwise the first
+    // write is logged under the stale phase (e.g. "planning") and the UI marks
+    // planning complete instead of showing "coding".
     onTool(c.function.name, args);
+    await event("action", verb(c.function.name, args), undefined, agent);
     results.set(c.id, String(await execTool(c.function.name, args)).slice(0, 40000));
   }));
 
@@ -658,8 +672,8 @@ async function runToolCalls(calls, agent, onTool) {
         continue;
       }
     }
-    await event("action", verb(name, args), undefined, agent);
     onTool(name, args);
+    await event("action", verb(name, args), undefined, agent);
     const run = () => execTool(name, args);
     const output = WRITE_TOOLS.has(name) || name === "run_shell" || name === "check_code"
       ? await serialized(run)
